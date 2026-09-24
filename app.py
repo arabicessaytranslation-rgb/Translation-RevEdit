@@ -155,31 +155,6 @@ def extract_text_from_drive(file_id):
         st.error(f"Could not read document from Drive. Ensure the bot is an Editor. Error: {e}")
         return None
 
-def create_new_google_doc(folder_id, title, arabic_texts, english_texts):
-    """Creates a new Google Doc in the specified folder and populates it with text."""
-    # 1. Create the blank file in the specific folder
-    file_metadata = {
-        'name': title,
-        'mimeType': 'application/vnd.google-apps.document',
-        'parents': [folder_id]
-    }
-    doc = drive_service.files().create(body=file_metadata, fields='id').execute()
-    doc_id = doc.get('id')
-    
-    # 2. Prepare the text
-    en_text = "\n\n".join(english_texts) + "\n"
-    ar_text = "\n\n".join(arabic_texts) + "\n"
-    
-    # 3. Batch insert (We insert in reverse order at index 1 so everything stacks properly)
-    requests = [
-        {'insertText': {'location': {'index': 1}, 'text': en_text}},     # Bottom: English
-        {'insertPageBreak': {'location': {'index': 1}}},                 # Middle: Page Break
-        {'insertText': {'location': {'index': 1}, 'text': ar_text}}      # Top: Arabic
-    ]
-    
-    docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': requests}).execute()
-    return doc_id
-
 # ==========================================
 # 4. DASHBOARD UI & ROUTING
 # ==========================================
@@ -308,31 +283,19 @@ if st.session_state['processed_data']:
     total_segments = len(st.session_state['processed_data'])
     st.write(f"**Approved Changes: {approved_count} / {total_segments}**")
     
+    # NEW LOGIC: Display text blocks for manual copying instead of generating a file
     if approved_count == total_segments:
-        st.subheader("💾 Export to Google Drive")
-        st.write("Save the finalized translation as a brand new Google Doc.")
+        st.success("🎉 All segments approved! You can now copy the finalized text below.")
         
-        col_name, col_folder = st.columns(2)
-        with col_name:
-            new_file_name = st.text_input("New Document Name:", value="Final_Reviewed_Translation")
-        with col_folder:
-            folder_url = st.text_input("Destination Folder URL (Must be shared with bot):")
-            
-        if st.button(">>> CREATE FINALIZED GOOGLE DOC <<<", type="primary"):
-            if not folder_url:
-                st.error("Please enter a Destination Folder URL.")
-            else:
-                folder_id = extract_id(folder_url)
-                if not folder_id:
-                    st.error("Invalid Folder URL.")
-                else:
-                    with st.spinner("Creating new document in Drive..."):
-                        try:
-                            doc_id = create_new_google_doc(folder_id, new_file_name, finalized_arabic_list, finalized_english_list)
-                            st.success(f"✅ Document '{new_file_name}' created successfully!")
-                            st.markdown(f"**[🔗 Click here to open your new document](https://docs.google.com/document/d/{doc_id}/edit)**")
-                        except Exception as e:
-                            st.error(f"Failed to create document. Ensure the bot is an Editor of the destination folder. Error: {e}")
+        st.subheader("📄 Finalized Translations")
+        
+        final_arabic_text = "\n\n".join(finalized_arabic_list)
+        final_english_text = "\n\n".join(finalized_english_list)
+        
+        col_final_ar, col_final_en = st.columns(2)
+        with col_final_ar:
+            st.text_area("Final Arabic Text (Select All and Copy)", value=final_arabic_text, height=400)
+        with col_final_en:
+            st.text_area("Final English Text (Select All and Copy)", value=final_english_text, height=400)
     else:
-        st.button(">>> CREATE FINALIZED GOOGLE DOC <<<", disabled=True)
-        st.caption("You must approve all segments before finalizing.")
+        st.caption("You must approve all segments above to reveal the final compiled text.")
