@@ -2,6 +2,8 @@ import streamlit as st
 import re
 import io
 import json
+import time
+import random
 import docx
 import fitz  # PyMuPDF
 from google.oauth2 import service_account
@@ -9,7 +11,6 @@ from googleapiclient.discovery import build
 from pydantic import BaseModel
 
 # --- NEW Google GenAI SDK (google-genai package) ---
-# Requires: pip install google-genai
 try:
     from google import genai
     from google.genai import types
@@ -24,6 +25,16 @@ st.set_page_config(page_title="12-Step Translation Reviewer", layout="wide")
 
 GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
 GLOSSARY_RANGE = "'المصطلحات'!C:D"
+
+# --- Retry policy for transient errors (503 / high demand) ---
+MAX_RETRIES_PER_MODEL = 3          # attempts per model before moving to next fallback
+BASE_BACKOFF_SECONDS = 2.0         # initial wait; doubles each retry
+MAX_BACKOFF_SECONDS = 15.0         # cap on wait time
+RETRYABLE_KEYWORDS = (
+    "503", "ServiceUnavailable", "service_unavailable",
+    "high demand", "UNAVAILABLE", "429", "ResourceExhausted",
+    "DeadlineExceeded", "timeout",
+)
 
 def check_password():
     if "password_correct" not in st.session_state:
@@ -69,7 +80,16 @@ docs_service, drive_service, sheets_service = get_google_services()
 
 # --- GEMINI SETUP (NEW google-genai SDK) ---
 MODEL_NAME = "gemini-3.6-flash"
-FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.0-flash"]
+
+# Fallback chain — if the primary is overloaded, try these in order.
+# 3.x-flash-lite / 2.5-flash-lite tiers tend to have more headroom.
+FALLBACK_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.0-flash",
+    "gemini-3.6-flash-lite",
+    "gemini-2.5-flash",
+]
 
 class ReviewResult(BaseModel):
     status: str
@@ -78,7 +98,6 @@ class ReviewResult(BaseModel):
 
 @st.cache_resource
 def get_genai_client():
-    """Create the centralized GenAI client for the new SDK."""
     if not GENAI_AVAILABLE:
         st.error(
             "❌ The `google-genai` package is not installed. "
@@ -124,6 +143,35 @@ Respond with the requested JSON object.
 Note: "status" must be one of: "perfect", "minor_edits", or "major_rewrite".
 """
 
+def _is_retryable(err_str: str) -> bool:
+    return any(kw.lower() in err_str.lower() for kw in RETRYABLE_KEYWORDS)
+
+def _backoff_sleep(attempt: int):
+    """Exponential backoff with jitter, capped at MAX_BACKOFF_SECONDS."""
+    delay = min(BASE_BACKOFF_SECONDS * (2 ** attempt), MAX_BACKOFF_SECONDS)
+    delay += random.uniform(0, 1.0)  # jitter to avoid thundering-herd
+    time.sleep(delay)
+
+def _call_gemini(model_name: str, prompt: str):
+    """One round-trip to the Interactions API, returning the parsed dict or raising."""
+    interaction = client.interactions.create(
+        model=model_name,
+        input=prompt,
+        response_format=[
+            {
+                "type": "text",
+                "mime_type": "application/json",
+                "schema": ReviewResult.model_json_schema(),
+            }
+        ],
+    )
+    raw_text = interaction.output_text
+    clean_text = raw_text.replace("```json", "").replace("```", "").strip()
+    match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+    if match:
+        clean_text = match.group(0)
+    return json.loads(clean_text)
+
 def review_with_ai(english, arabic, glossary_text):
     if not GENAI_AVAILABLE or client is None:
         return {"status": "major_rewrite", "suggested_arabic": arabic,
@@ -137,44 +185,41 @@ def review_with_ai(english, arabic, glossary_text):
 
     last_error = None
     for model_name in FALLBACK_MODELS:
-        try:
-            interaction = client.interactions.create(
-                model=model_name,
-                input=prompt,
-                response_format=[
-                    {
-                        "type": "text",
-                        "mime_type": "application/json",
-                        "schema": ReviewResult.model_json_schema(),
-                    }
-                ],
-            )
+        for attempt in range(MAX_RETRIES_PER_MODEL):
+            try:
+                parsed = _call_gemini(model_name, prompt)
+                return {
+                    "status": parsed.get("status", "minor_edits"),
+                    "suggested_arabic": parsed.get("suggested_arabic", arabic),
+                    "reasoning": parsed.get("reasoning", "Reviewed successfully.")
+                }
 
-            raw_text = interaction.output_text
+            except Exception as e:
+                err_str = f"{type(e).__name__} - {str(e)}"
+                last_error = err_str
 
-            clean_text = raw_text.replace("```json", "").replace("```", "").strip()
-            match = re.search(r'\{.*\}', clean_text, re.DOTALL)
-            if match:
-                clean_text = match.group(0)
+                # 404 / model-unavailable → skip retries on this model, go straight to next
+                if any(kw in err_str for kw in
+                       ("NotFound", "404", "no longer available", "not found", "not supported")):
+                    break
 
-            parsed = json.loads(clean_text)
-            return {
-                "status": parsed.get("status", "minor_edits"),
-                "suggested_arabic": parsed.get("suggested_arabic", arabic),
-                "reasoning": parsed.get("reasoning", "Reviewed successfully.")
-            }
+                # Transient overload → retry with backoff on the same model
+                if _is_retryable(err_str) and attempt < MAX_RETRIES_PER_MODEL - 1:
+                    _backoff_sleep(attempt)
+                    continue
 
-        except Exception as e:
-            err_str = f"{type(e).__name__} - {str(e)}"
-            last_error = err_str
+                # Non-retryable, or retries exhausted → try next fallback model
+                break
 
-            if any(keyword in err_str for keyword in
-                   ("NotFound", "404", "no longer available", "not found", "not supported")):
-                continue
-            break
-
-    return {"status": "major_rewrite", "suggested_arabic": arabic,
-            "reasoning": f"Error: {last_error}"}
+    # All models + retries exhausted
+    return {
+        "status": "major_rewrite",
+        "suggested_arabic": arabic,
+        "reasoning": (
+            f"⚠️ Gemini was overloaded across all fallback models after retries. "
+            f"Please re-run this segment in a moment. Last error: {last_error}"
+        ),
+    }
 
 def extract_id(url):
     match = re.search(r"/(?:d|folders)/([a-zA-Z0-9-_]+)", url)
