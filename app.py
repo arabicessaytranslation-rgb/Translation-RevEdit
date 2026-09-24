@@ -58,7 +58,7 @@ def get_google_services():
 
 docs_service, drive_service, sheets_service = get_google_services()
 
-# --- GEMINI SETUP WITH ACTIVE MODEL DETECTION ---
+# --- GEMINI SETUP TARGETING GEMINI-3.6-FLASH ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
 safety_settings = [
@@ -70,60 +70,21 @@ safety_settings = [
 
 @st.cache_resource
 def get_gemini_model():
-    """Finds the currently active Gemini model supported by the API key."""
-    # List candidate model names in order of preference
-    preferred_models = [
-        "gemini-2.5-flash",
-        "models/gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "models/gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "models/gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "models/gemini-1.5-flash-latest"
-    ]
-    
-    selected_model_name = None
-    try:
-        # Query the API directly to see which models are active and support generateContent
-        supported = [
-            m.name for m in genai.list_models()
-            if 'generateContent' in getattr(m, 'supported_generation_methods', [])
-        ]
-        
-        # 1. Match against preferred models
-        for pref in preferred_models:
-            short_name = pref.replace("models/", "")
-            for candidate in supported:
-                if candidate == pref or candidate.replace("models/", "") == short_name:
-                    selected_model_name = candidate
-                    break
-            if selected_model_name:
-                break
-                
-        # 2. If no preferred matched, pick any active flash or gemini model
-        if not selected_model_name and supported:
-            flash_models = [m for m in supported if "flash" in m.lower()]
-            selected_model_name = flash_models[0] if flash_models else supported[0]
-            
-    except Exception:
-        # Fallback to direct name if list_models is restricted
-        selected_model_name = "gemini-2.5-flash"
-        
-    if not selected_model_name:
-        selected_model_name = "gemini-2.5-flash"
-
+    """Binds directly to gemini-3.6-flash as requested by the API endpoint."""
+    model_name = "gemini-3.6-flash"
     generation_config = {"response_mime_type": "application/json"}
     
     try:
         return genai.GenerativeModel(
-            selected_model_name,
+            model_name,
             generation_config=generation_config,
             safety_settings=safety_settings
         )
     except Exception:
+        # Fallback to models/ prefix if required by the SDK version
         return genai.GenerativeModel(
-            selected_model_name,
+            f"models/{model_name}",
+            generation_config=generation_config,
             safety_settings=safety_settings
         )
 
