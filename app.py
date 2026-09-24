@@ -4,9 +4,11 @@ import io
 import json
 import docx
 import fitz  # PyMuPDF
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from pydantic import BaseModel
 
 # ==========================================
 # 1. CONFIGURATION & SECRETS
@@ -14,7 +16,7 @@ from googleapiclient.discovery import build
 st.set_page_config(page_title="12-Step Translation Reviewer", layout="wide")
 
 GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
-GLOSSARY_RANGE = "'المصطلحات'!C:D" 
+GLOSSARY_RANGE = "'المصطلحات'!C:D"
 
 def check_password():
     if "password_correct" not in st.session_state:
@@ -41,9 +43,9 @@ def get_google_services():
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
         credentials = service_account.Credentials.from_service_account_info(
-            creds_dict, 
+            creds_dict,
             scopes=[
-                'https://www.googleapis.com/auth/documents', 
+                'https://www.googleapis.com/auth/documents',
                 'https://www.googleapis.com/auth/drive',
                 'https://www.googleapis.com/auth/spreadsheets.readonly'
             ]
@@ -58,37 +60,33 @@ def get_google_services():
 
 docs_service, drive_service, sheets_service = get_google_services()
 
-# --- GEMINI SETUP TARGETING GEMINI-3.6-FLASH ---
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+# --- GEMINI SETUP (NEW google-genai SDK) ---
+# The new SDK uses a central Client object instead of module-level configure().
+# See: https://ai.google.dev/gemini-api/docs/migrate
 
-safety_settings = [
-    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-]
+# Model name — the new SDK expects just the model name (no "models/" prefix).
+MODEL_NAME = "gemini-3.6-flash"
+
+# Fallback models if the primary is unavailable on your account/region.
+FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.0-flash"]
+
+# --- Define the structured output schema using Pydantic ---
+# The Interactions API uses response_format with a JSON schema for structured output.
+class ReviewResult(BaseModel):
+    status: str
+    suggested_arabic: str
+    reasoning: str
 
 @st.cache_resource
-def get_gemini_model():
-    """Binds directly to gemini-3.6-flash as requested by the API endpoint."""
-    model_name = "gemini-3.6-flash"
-    generation_config = {"response_mime_type": "application/json"}
-    
-    try:
-        return genai.GenerativeModel(
-            model_name,
-            generation_config=generation_config,
-            safety_settings=safety_settings
-        )
-    except Exception:
-        # Fallback to models/ prefix if required by the SDK version
-        return genai.GenerativeModel(
-            f"models/{model_name}",
-            generation_config=generation_config,
-            safety_settings=safety_settings
-        )
+def get_genai_client():
+    """
+    Create the centralized GenAI client.
+    In the new SDK, this single client is the entry point for all API calls
+    (models, interactions, files, caches, etc.).
+    """
+    return genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 
-model = get_gemini_model()
+client = get_genai_client()
 
 # ==========================================
 # 3. HELPER FUNCTIONS
@@ -99,7 +97,7 @@ def fetch_glossary():
         sheet = sheets_service.spreadsheets()
         result = sheet.values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_RANGE).execute()
         values = result.get('values', [])
-        
+
         glossary_string = "12-Step Glossary:\n"
         for row in values:
             if len(row) >= 2:
@@ -109,11 +107,8 @@ def fetch_glossary():
         st.warning(f"Could not fetch glossary. Please check the ID, Tab Name, and sharing permissions. Error: {e}")
         return ""
 
-def review_with_ai(english, arabic, glossary_text):
-    if "[MISSING" in english or "[MISSING" in arabic:
-        return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "Alignment mismatch detected. Manual input required."}
-        
-    prompt = f"""
+def _build_prompt(english, arabic, glossary_text):
+    return f"""
 You are an expert translator specializing in 12-step recovery literature.
 Your tone must be clinical, professional, and non-moralizing.
 
@@ -124,36 +119,61 @@ Review this translation pair:
 English: "{english}"
 Arabic: "{arabic}"
 
-Respond with a JSON object conforming strictly to this format:
-{{
-    "status": "perfect",
-    "suggested_arabic": "The finalized Arabic text",
-    "reasoning": "Brief explanation"
-}}
+Respond with the requested JSON object.
 Note: "status" must be one of: "perfect", "minor_edits", or "major_rewrite".
 """
-    try:
-        response = model.generate_content(prompt)
-        
+
+def review_with_ai(english, arabic, glossary_text):
+    if "[MISSING" in english or "[MISSING" in arabic:
+        return {"status": "major_rewrite", "suggested_arabic": arabic,
+                "reasoning": "Alignment mismatch detected. Manual input required."}
+
+    prompt = _build_prompt(english, arabic, glossary_text)
+
+    last_error = None
+    for model_name in FALLBACK_MODELS:
         try:
-            raw_text = response.text
-        except ValueError:
-            feedback = getattr(response, 'prompt_feedback', 'Safety blocked')
-            return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": f"Blocked by safety filter: {feedback}"}
-            
-        clean_text = raw_text.replace("```json", "").replace("```", "").strip()
-        match = re.search(r'\{.*\}', clean_text, re.DOTALL)
-        if match:
-            clean_text = match.group(0)
-            
-        parsed = json.loads(clean_text)
-        return {
-            "status": parsed.get("status", "minor_edits"),
-            "suggested_arabic": parsed.get("suggested_arabic", arabic),
-            "reasoning": parsed.get("reasoning", "Reviewed successfully.")
-        }
-    except Exception as e:
-        return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": f"Error: {type(e).__name__} - {str(e)}"}
+            interaction = client.interactions.create(
+                model=model_name,
+                input=prompt,
+                response_format=[
+                    {
+                        "type": "text",
+                        "mime_type": "application/json",
+                        "schema": ReviewResult.model_json_schema(),
+                    }
+                ],
+            )
+
+            # Extract the JSON text from the interaction output
+            raw_text = interaction.output_text
+
+            clean_text = raw_text.replace("```json", "").replace("```", "").strip()
+            match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+            if match:
+                clean_text = match.group(0)
+
+            parsed = json.loads(clean_text)
+            return {
+                "status": parsed.get("status", "minor_edits"),
+                "suggested_arabic": parsed.get("suggested_arabic", arabic),
+                "reasoning": parsed.get("reasoning", "Reviewed successfully.")
+            }
+
+        except Exception as e:
+            err_str = f"{type(e).__name__} - {str(e)}"
+            last_error = err_str
+
+            # If the model is unavailable, try the next fallback.
+            if any(keyword in err_str for keyword in
+                   ("NotFound", "404", "no longer available", "not found", "not supported")):
+                continue
+
+            # Non-404 error → stop trying fallbacks.
+            break
+
+    return {"status": "major_rewrite", "suggested_arabic": arabic,
+            "reasoning": f"Error: {last_error}"}
 
 def extract_id(url):
     match = re.search(r"/(?:d|folders)/([a-zA-Z0-9-_]+)", url)
@@ -178,7 +198,7 @@ def extract_text_from_drive(file_id):
     try:
         file_meta = drive_service.files().get(fileId=file_id, fields="mimeType").execute()
         mime_type = file_meta.get("mimeType")
-        
+
         if mime_type == 'application/vnd.google-apps.document':
             document = docs_service.documents().get(documentId=file_id).execute()
             paragraphs = []
@@ -191,7 +211,7 @@ def extract_text_from_drive(file_id):
                     clean_text = para_text.strip()
                     if clean_text: paragraphs.append(clean_text)
             return paragraphs
-            
+
         elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
             request = drive_service.files().get_media(fileId=file_id)
             file_bytes = request.execute()
@@ -208,7 +228,7 @@ def smart_align_mixed_text(paragraphs):
     current_en = []
     current_ar = []
     current_state = 'en'
-    
+
     for p in paragraphs:
         has_arabic = bool(re.search(r'[\u0600-\u06FF]', p))
         if not has_arabic:
@@ -221,7 +241,7 @@ def smart_align_mixed_text(paragraphs):
         else:
             current_state = 'ar'
             current_ar.append(p)
-            
+
     if current_en or current_ar:
         pairs.append({"english": "\n".join(current_en), "arabic": "\n".join(current_ar)})
     return pairs
@@ -255,7 +275,7 @@ tab1, tab2 = st.tabs(["Method 1: Google Drive Link (In-Place)", "Method 2: Direc
 with tab1:
     st.write("Paste a Google Doc or Word URL to review the document.")
     doc_url = st.text_input("Paste Google Drive File URL Here:")
-    
+
     if st.button("Load from Drive") and doc_url:
         file_id = extract_id(doc_url)
         if not file_id:
@@ -263,15 +283,15 @@ with tab1:
         else:
             st.info(f"Connecting to Document ID: {file_id}...")
             paras = extract_text_from_drive(file_id)
-            
+
             if paras:
                 smart_pairs = smart_align_mixed_text(paras)
-                
+
                 st.info(f"File read successfully! Smart detection found {len(smart_pairs)} translation pairs. Sending to AI...")
                 progress_bar = st.progress(0)
                 processed_results = []
                 total = len(smart_pairs)
-                
+
                 for i, pair in enumerate(smart_pairs):
                     en, ar = pair['english'], pair['arabic']
                     ai_result = review_with_ai(en, ar, glossary_data)
@@ -284,7 +304,7 @@ with tab1:
                         "reasoning": ai_result.get("reasoning", "Review complete.")
                     })
                     progress_bar.progress((i + 1) / total)
-                
+
                 st.session_state['processed_data'] = processed_results
                 st.rerun()
 
@@ -296,22 +316,22 @@ with tab2:
         file_en = st.file_uploader("1. Upload English Source", type=["docx", "pdf"])
     with colB:
         file_ar = st.file_uploader("2. Upload Arabic Translation", type=["docx", "pdf"])
-        
+
     if st.button("Process Uploaded Files") and file_en and file_ar:
         en_paras = extract_text_from_pdf(file_en.read()) if file_en.name.endswith('.pdf') else extract_text_from_docx(file_en.read())
         ar_paras = extract_text_from_pdf(file_ar.read()) if file_ar.name.endswith('.pdf') else extract_text_from_docx(file_ar.read())
-        
+
         smart_pairs = smart_align_separate_files(en_paras, ar_paras)
-        
+
         if len(en_paras) != len(ar_paras):
             st.warning(f"⚠️ Alignment Mismatch Detected: {len(en_paras)} English blocks vs {len(ar_paras)} Arabic blocks. Proceeding with missing tags...")
         else:
             st.info("Files aligned! Sending to AI for review. This may take a moment...")
-            
+
         progress_bar = st.progress(0)
         processed_results = []
         total = len(smart_pairs)
-        
+
         for i, pair in enumerate(smart_pairs):
             en, ar = pair['english'], pair['arabic']
             ai_result = review_with_ai(en, ar, glossary_data)
@@ -324,7 +344,7 @@ with tab2:
                 "reasoning": ai_result.get("reasoning", "Review complete.")
             })
             progress_bar.progress((i + 1) / total)
-        
+
         st.session_state['processed_data'] = processed_results
         st.rerun()
 
@@ -334,17 +354,17 @@ with tab2:
 if st.session_state['processed_data']:
     st.divider()
     st.subheader("Review Pending Edits")
-    
+
     approved_count = 0
     finalized_arabic_list = []
     finalized_english_list = []
-    
+
     for i, item in enumerate(st.session_state['processed_data']):
         color = "🟢" if item['status'] == "perfect" else ("🟡" if item['status'] == "minor_edits" else "🔴")
-        
+
         with st.container():
             st.markdown(f"**Segment {item['id']}** | Status: {color} {item['status'].upper()}")
-            
+
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.text_area("English Source (Read-Only)", value=item['english'], disabled=True, height=120, key=f"en_{i}")
@@ -354,7 +374,7 @@ if st.session_state['processed_data']:
             with col3:
                 final_text = st.text_area("Final Arabic Decision (Edit Here)", value=item['suggested_arabic'], height=120, key=f"edit_ar_{i}")
                 is_approved = st.checkbox("Approve this segment", key=f"approve_{i}", value=(item['status'] == 'perfect' or item['status'] == 'minor_edits'))
-                
+
                 if is_approved:
                     approved_count += 1
                     finalized_arabic_list.append(final_text)
@@ -363,15 +383,15 @@ if st.session_state['processed_data']:
 
     total_segments = len(st.session_state['processed_data'])
     st.write(f"**Approved Changes: {approved_count} / {total_segments}**")
-    
+
     if approved_count == total_segments:
         st.success("🎉 All segments approved! You can now copy the finalized text below.")
-        
+
         st.subheader("📄 Finalized Translations")
-        
+
         final_arabic_text = "\n\n".join(finalized_arabic_list)
         final_english_text = "\n\n".join(finalized_english_list)
-        
+
         col_final_ar, col_final_en = st.columns(2)
         with col_final_ar:
             st.text_area("Final Arabic Text (Select All and Copy)", value=final_arabic_text, height=400)
