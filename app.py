@@ -59,8 +59,20 @@ def get_google_services():
 docs_service, drive_service, sheets_service = get_google_services()
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
+# NEW: Disable safety blocks for 12-Step clinical text
+safety_settings = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+]
+
 generation_config = {"response_mime_type": "application/json"}
-model = genai.GenerativeModel('gemini-1.5-flash', generation_config=generation_config)
+model = genai.GenerativeModel(
+    'gemini-1.5-flash', 
+    generation_config=generation_config,
+    safety_settings=safety_settings
+)
 
 # ==========================================
 # 3. HELPER FUNCTIONS
@@ -105,11 +117,17 @@ def review_with_ai(english, arabic, glossary_text):
     """
     try:
         response = model.generate_content(prompt)
-        return json.loads(response.text)
+        
+        # NEW: Bulletproof JSON cleaner in case AI adds markdown
+        raw_text = response.text
+        clean_text = raw_text.replace("```json", "").replace("```", "").strip()
+        
+        return json.loads(clean_text)
     except Exception as e:
         st.error(f"🚨 Detailed AI Error: {e}")
         try:
-            st.error(f"🚨 Raw AI Response: {response.text}")
+            # Check if it was blocked by safety ratings despite our override
+            st.error(f"🚨 Safety/Block Feedback: {response.prompt_feedback}")
         except:
             pass
         return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "AI Error. Please review manually."}
