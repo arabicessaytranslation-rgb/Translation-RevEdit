@@ -82,6 +82,9 @@ def fetch_glossary():
         return ""
 
 def review_with_ai(english, arabic, glossary_text):
+    if "[MISSING" in english or "[MISSING" in arabic:
+        return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "Alignment mismatch detected. Manual input required."}
+        
     prompt = f"""
     You are an expert translator specializing in 12-step recovery literature. 
     Your tone must be clinical, professional, and non-moralizing.
@@ -107,7 +110,6 @@ def review_with_ai(english, arabic, glossary_text):
         return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "AI Error. Please review manually."}
 
 def extract_id(url):
-    """Extracts the ID from a Google Docs, Drive File, or Drive Folder URL."""
     match = re.search(r"/(?:d|folders)/([a-zA-Z0-9-_]+)", url)
     if match: return match.group(1)
     match_param = re.search(r"id=([a-zA-Z0-9-_]+)", url)
@@ -155,6 +157,41 @@ def extract_text_from_drive(file_id):
         st.error(f"Could not read document from Drive. Ensure the bot is an Editor. Error: {e}")
         return None
 
+# --- NEW SMART ALIGNMENT ENGINES ---
+def smart_align_mixed_text(paragraphs):
+    """Uses Regex to detect Arabic Unicode and intelligently stitch broken paragraphs together."""
+    pairs = []
+    current_en = []
+    current_ar = []
+    current_state = 'en'
+    
+    for p in paragraphs:
+        has_arabic = bool(re.search(r'[\u0600-\u06FF]', p))
+        if not has_arabic:
+            if current_state == 'ar':
+                pairs.append({"english": "\n".join(current_en), "arabic": "\n".join(current_ar)})
+                current_en = []
+                current_ar = []
+                current_state = 'en'
+            current_en.append(p)
+        else:
+            current_state = 'ar'
+            current_ar.append(p)
+            
+    if current_en or current_ar:
+        pairs.append({"english": "\n".join(current_en), "arabic": "\n".join(current_ar)})
+    return pairs
+
+def smart_align_separate_files(en_paras, ar_paras):
+    """Zips files and handles length mismatches gracefully without crashing."""
+    pairs = []
+    max_len = max(len(en_paras), len(ar_paras))
+    for i in range(max_len):
+        en = en_paras[i] if i < len(en_paras) else "[MISSING ENGLISH SOURCE]"
+        ar = ar_paras[i] if i < len(ar_paras) else "[MISSING ARABIC TRANSLATION]"
+        pairs.append({"english": en, "arabic": ar})
+    return pairs
+
 # ==========================================
 # 4. DASHBOARD UI & ROUTING
 # ==========================================
@@ -185,31 +222,29 @@ with tab1:
             paras = extract_text_from_drive(file_id)
             
             if paras:
-                en_paras = paras[0::2]
-                ar_paras = paras[1::2]
+                # Apply smart regex detection
+                smart_pairs = smart_align_mixed_text(paras)
                 
-                if len(en_paras) != len(ar_paras):
-                    st.error(f"⚠️ Alignment Warning: Found {len(en_paras)} English paragraphs and {len(ar_paras)} Arabic paragraphs. The document must alternate exactly.")
-                else:
-                    st.info("File read successfully! Sending to AI for review. This may take a moment...")
-                    progress_bar = st.progress(0)
-                    processed_results = []
-                    total = len(en_paras)
-                    
-                    for i, (en, ar) in enumerate(zip(en_paras, ar_paras)):
-                        ai_result = review_with_ai(en, ar, glossary_data)
-                        processed_results.append({
-                            "id": i + 1,
-                            "status": ai_result.get("status", "minor_edits"),
-                            "english": en,
-                            "original_arabic": ar,
-                            "suggested_arabic": ai_result.get("suggested_arabic", ar),
-                            "reasoning": ai_result.get("reasoning", "Review complete.")
-                        })
-                        progress_bar.progress((i + 1) / total)
-                    
-                    st.session_state['processed_data'] = processed_results
-                    st.rerun()
+                st.info(f"File read successfully! Smart detection found {len(smart_pairs)} translation pairs. Sending to AI...")
+                progress_bar = st.progress(0)
+                processed_results = []
+                total = len(smart_pairs)
+                
+                for i, pair in enumerate(smart_pairs):
+                    en, ar = pair['english'], pair['arabic']
+                    ai_result = review_with_ai(en, ar, glossary_data)
+                    processed_results.append({
+                        "id": i + 1,
+                        "status": ai_result.get("status", "minor_edits"),
+                        "english": en,
+                        "original_arabic": ar,
+                        "suggested_arabic": ai_result.get("suggested_arabic", ar),
+                        "reasoning": ai_result.get("reasoning", "Review complete.")
+                    })
+                    progress_bar.progress((i + 1) / total)
+                
+                st.session_state['processed_data'] = processed_results
+                st.rerun()
 
 # --- TAB 2: FILE UPLOAD ---
 with tab2:
@@ -224,28 +259,33 @@ with tab2:
         en_paras = extract_text_from_pdf(file_en.read()) if file_en.name.endswith('.pdf') else extract_text_from_docx(file_en.read())
         ar_paras = extract_text_from_pdf(file_ar.read()) if file_ar.name.endswith('.pdf') else extract_text_from_docx(file_ar.read())
         
+        # Apply mismatch-safe pairing
+        smart_pairs = smart_align_separate_files(en_paras, ar_paras)
+        
         if len(en_paras) != len(ar_paras):
-            st.error(f"⚠️ Alignment Warning: English has {len(en_paras)} paragraphs, Arabic has {len(ar_paras)}.")
+            st.warning(f"⚠️ Alignment Mismatch Detected: {len(en_paras)} English blocks vs {len(ar_paras)} Arabic blocks. Proceeding with missing tags...")
         else:
             st.info("Files aligned! Sending to AI for review. This may take a moment...")
-            progress_bar = st.progress(0)
-            processed_results = []
-            total = len(en_paras)
             
-            for i, (en, ar) in enumerate(zip(en_paras, ar_paras)):
-                ai_result = review_with_ai(en, ar, glossary_data)
-                processed_results.append({
-                    "id": i + 1,
-                    "status": ai_result.get("status", "minor_edits"),
-                    "english": en,
-                    "original_arabic": ar,
-                    "suggested_arabic": ai_result.get("suggested_arabic", ar),
-                    "reasoning": ai_result.get("reasoning", "Review complete.")
-                })
-                progress_bar.progress((i + 1) / total)
-            
-            st.session_state['processed_data'] = processed_results
-            st.rerun()
+        progress_bar = st.progress(0)
+        processed_results = []
+        total = len(smart_pairs)
+        
+        for i, pair in enumerate(smart_pairs):
+            en, ar = pair['english'], pair['arabic']
+            ai_result = review_with_ai(en, ar, glossary_data)
+            processed_results.append({
+                "id": i + 1,
+                "status": ai_result.get("status", "minor_edits"),
+                "english": en,
+                "original_arabic": ar,
+                "suggested_arabic": ai_result.get("suggested_arabic", ar),
+                "reasoning": ai_result.get("reasoning", "Review complete.")
+            })
+            progress_bar.progress((i + 1) / total)
+        
+        st.session_state['processed_data'] = processed_results
+        st.rerun()
 
 # ==========================================
 # 5. THE REVIEW GRID & EXPORT
@@ -272,7 +312,7 @@ if st.session_state['processed_data']:
                 st.caption(f"**AI Reasoning:** {item['reasoning']}")
             with col3:
                 final_text = st.text_area("Final Arabic Decision (Edit Here)", value=item['suggested_arabic'], height=120, key=f"edit_ar_{i}")
-                is_approved = st.checkbox("Approve this segment", key=f"approve_{i}", value=(item['status'] == 'perfect'))
+                is_approved = st.checkbox("Approve this segment", key=f"approve_{i}", value=(item['status'] == 'perfect' or item['status'] == 'minor_edits'))
                 
                 if is_approved:
                     approved_count += 1
@@ -283,7 +323,6 @@ if st.session_state['processed_data']:
     total_segments = len(st.session_state['processed_data'])
     st.write(f"**Approved Changes: {approved_count} / {total_segments}**")
     
-    # NEW LOGIC: Display text blocks for manual copying instead of generating a file
     if approved_count == total_segments:
         st.success("🎉 All segments approved! You can now copy the finalized text below.")
         
