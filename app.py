@@ -59,7 +59,6 @@ def get_google_services():
 docs_service, drive_service, sheets_service = get_google_services()
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
-# NEW: Disable safety blocks for 12-Step clinical text
 safety_settings = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -98,39 +97,46 @@ def review_with_ai(english, arabic, glossary_text):
         return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "Alignment mismatch detected. Manual input required."}
         
     prompt = f"""
-    You are an expert translator specializing in 12-step recovery literature. 
-    Your tone must be clinical, professional, and non-moralizing.
-    
-    You MUST adhere to this glossary for specific terms:
-    {glossary_text}
-    
-    Review this translation pair:
-    English: "{english}"
-    Arabic: "{arabic}"
-    
-    Respond ONLY with a JSON object using this exact format:
-    {{
-        "status": "perfect" OR "minor_edits" OR "major_rewrite",
-        "suggested_arabic": "The finalized Arabic text (keep original if perfect, or provide the corrected version)",
-        "reasoning": "Briefly explain why you made changes, or say 'Matches glossary/tone' if perfect."
-    }}
-    """
+You are an expert translator specializing in 12-step recovery literature.
+Your tone must be clinical, professional, and non-moralizing.
+
+You MUST adhere to this glossary for specific terms:
+{glossary_text}
+
+Review this translation pair:
+English: "{english}"
+Arabic: "{arabic}"
+
+Respond with a JSON object conforming strictly to this format:
+{{
+    "status": "perfect",
+    "suggested_arabic": "The finalized Arabic text",
+    "reasoning": "Brief explanation"
+}}
+Note: "status" must be one of: "perfect", "minor_edits", or "major_rewrite".
+"""
     try:
         response = model.generate_content(prompt)
         
-        # NEW: Bulletproof JSON cleaner in case AI adds markdown
-        raw_text = response.text
-        clean_text = raw_text.replace("```json", "").replace("```", "").strip()
-        
-        return json.loads(clean_text)
-    except Exception as e:
-        st.error(f"🚨 Detailed AI Error: {e}")
         try:
-            # Check if it was blocked by safety ratings despite our override
-            st.error(f"🚨 Safety/Block Feedback: {response.prompt_feedback}")
-        except:
-            pass
-        return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "AI Error. Please review manually."}
+            raw_text = response.text
+        except ValueError:
+            feedback = getattr(response, 'prompt_feedback', 'Safety blocked')
+            return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": f"Blocked by safety filter: {feedback}"}
+            
+        clean_text = raw_text.replace("```json", "").replace("```", "").strip()
+        match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+        if match:
+            clean_text = match.group(0)
+            
+        parsed = json.loads(clean_text)
+        return {
+            "status": parsed.get("status", "minor_edits"),
+            "suggested_arabic": parsed.get("suggested_arabic", arabic),
+            "reasoning": parsed.get("reasoning", "Reviewed successfully.")
+        }
+    except Exception as e:
+        return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": f"Error: {type(e).__name__} - {str(e)}"}
 
 def extract_id(url):
     match = re.search(r"/(?:d|folders)/([a-zA-Z0-9-_]+)", url)
