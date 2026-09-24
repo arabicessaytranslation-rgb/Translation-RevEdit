@@ -10,9 +10,13 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 # ==========================================
-# 1. PAGE CONFIG & AUTHENTICATION
+# 1. CONFIGURATION & SECRETS
 # ==========================================
 st.set_page_config(page_title="12-Step Translation Reviewer", layout="wide")
+
+# ---> REPLACE THESE TWO LINES WITH YOUR ACTUAL SHEET DETAILS <---
+GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
+GLOSSARY_RANGE = "'المصطلحات'!C:D" # Assumes English is Column A, Arabic is Column B
 
 def check_password():
     if "password_correct" not in st.session_state:
@@ -40,20 +44,75 @@ def get_google_services():
         creds_dict = dict(st.secrets["gcp_service_account"])
         credentials = service_account.Credentials.from_service_account_info(
             creds_dict, 
-            scopes=['https://www.googleapis.com/auth/documents', 'https://www.googleapis.com/auth/drive']
+            scopes=[
+                'https://www.googleapis.com/auth/documents', 
+                'https://www.googleapis.com/auth/drive',
+                'https://www.googleapis.com/auth/spreadsheets.readonly'
+            ]
         )
         docs_service = build('docs', 'v1', credentials=credentials)
         drive_service = build('drive', 'v3', credentials=credentials)
-        return docs_service, drive_service
+        sheets_service = build('sheets', 'v4', credentials=credentials)
+        return docs_service, drive_service, sheets_service
     except Exception as e:
-        return None, None
+        st.error(f"Google Auth Error: {e}")
+        return None, None, None
 
-docs_service, drive_service = get_google_services()
+docs_service, drive_service, sheets_service = get_google_services()
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+
+# Setup the AI Model (Using Gemini 1.5 Flash for speed)
+generation_config = {"response_mime_type": "application/json"}
+model = genai.GenerativeModel('gemini-1.5-flash', generation_config=generation_config)
 
 # ==========================================
 # 3. HELPER FUNCTIONS
 # ==========================================
+@st.cache_data(ttl=3600)
+def fetch_glossary():
+    """Fetches English/Arabic pairs from the Google Sheet."""
+    if GLOSSARY_SPREADSHEET_ID == "YOUR_SPREADSHEET_ID_HERE":
+        return "No glossary connected."
+    try:
+        sheet = sheets_service.spreadsheets()
+        result = sheet.values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_RANGE).execute()
+        values = result.get('values', [])
+        
+        glossary_string = "12-Step Glossary:\n"
+        for row in values:
+            if len(row) >= 2:
+                glossary_string += f"- {row[0]} -> {row[1]}\n"
+        return glossary_string
+    except Exception as e:
+        st.warning(f"Could not fetch glossary. Please check the ID, Tab Name, and sharing permissions. Error: {e}")
+        return ""
+
+def review_with_ai(english, arabic, glossary_text):
+    """Sends a single paragraph pair to Gemini for review against the glossary."""
+    prompt = f"""
+    You are an expert translator specializing in 12-step recovery literature. 
+    Your tone must be clinical, professional, and non-moralizing.
+    
+    You MUST adhere to this glossary for specific terms:
+    {glossary_text}
+    
+    Review this translation pair:
+    English: "{english}"
+    Arabic: "{arabic}"
+    
+    Respond ONLY with a JSON object using this exact format:
+    {{
+        "status": "perfect" OR "minor_edits" OR "major_rewrite",
+        "suggested_arabic": "The finalized Arabic text (keep original if perfect, or provide the corrected version)",
+        "reasoning": "Briefly explain why you made changes, or say 'Matches glossary/tone' if perfect."
+    }}
+    """
+    try:
+        response = model.generate_content(prompt)
+        return json.loads(response.text)
+    except Exception as e:
+        return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "AI Error. Please review manually."}
+
 def extract_file_id(url):
     match = re.search(r"/d/([a-zA-Z0-9-_]+)", url)
     return match.group(1) if match else None
@@ -64,12 +123,8 @@ def extract_text_from_pdf(file_bytes):
     for page_num in range(len(pdf_document)):
         full_text += pdf_document.load_page(page_num).get_text("text") + "\n"
     
-    cleaned_paragraphs = []
-    for para in full_text.split('\n\n'):
-        clean_para = para.replace('\n', ' ').strip()
-        if clean_para:
-            cleaned_paragraphs.append(clean_para)
-    return cleaned_paragraphs
+    cleaned = [p.replace('\n', ' ').strip() for p in full_text.split('\n\n') if p.replace('\n', ' ').strip()]
+    return cleaned
 
 def extract_text_from_docx(file_bytes):
     doc = docx.Document(io.BytesIO(file_bytes))
@@ -96,9 +151,13 @@ def build_final_docx(arabic_texts, english_texts):
 # 4. DASHBOARD UI & ROUTING
 # ==========================================
 st.title("Arabic Translation Reviewer - 12-Step Literature")
-st.write("Logged in securely. Ready to process documents.")
+glossary_data = fetch_glossary()
 
-# Initialize session state for the parsed data
+if "No glossary connected" not in glossary_data and glossary_data != "":
+    st.success(f"✅ Glossary connected successfully from tab: {GLOSSARY_RANGE.split('!')[0]}")
+else:
+    st.warning("⚠️ Glossary not active. Check Spreadsheet ID and Tab Name.")
+
 if 'processed_data' not in st.session_state:
     st.session_state['processed_data'] = None
 if 'workflow_type' not in st.session_state:
@@ -117,8 +176,7 @@ with tab1:
             st.error("Invalid Google Drive URL.")
         else:
             st.info(f"Connecting to Document ID: {file_id}...")
-            # Placeholder: In a full production script, you'd extract text via docs_service here.
-            # Simulating data extraction and AI response for UI demonstration:
+            # Simulated Drive extraction for the skeleton UI
             st.session_state['processed_data'] = [
                 {
                     "id": 1,
@@ -149,23 +207,25 @@ with tab2:
         if len(en_paras) != len(ar_paras):
             st.error(f"⚠️ Alignment Warning: English has {len(en_paras)} paragraphs, Arabic has {len(ar_paras)}.")
         else:
-            st.success("Files aligned successfully! Generating review cards...")
+            st.info("Files aligned! Sending to AI for review. This may take a moment...")
+            progress_bar = st.progress(0)
             
-            # Combine them into the expected dictionary format
-            raw_pairs = [{"id": i+1, "english": en, "original_arabic": ar} for i, (en, ar) in enumerate(zip(en_paras, ar_paras))]
+            processed_results = []
+            total = len(en_paras)
             
-            # Placeholder: Feed raw_pairs to Gemini via genai library here.
-            # Simulating output for the dashboard:
-            st.session_state['processed_data'] = [
-                {
-                    "id": p["id"],
-                    "status": "perfect" if "test" not in p["english"].lower() else "minor_edits",
-                    "english": p["english"],
-                    "original_arabic": p["original_arabic"],
-                    "suggested_arabic": p["original_arabic"], # Simulated untouched
-                    "reasoning": "AI Review Complete."
-                } for p in raw_pairs
-            ]
+            for i, (en, ar) in enumerate(zip(en_paras, ar_paras)):
+                ai_result = review_with_ai(en, ar, glossary_data)
+                processed_results.append({
+                    "id": i + 1,
+                    "status": ai_result.get("status", "minor_edits"),
+                    "english": en,
+                    "original_arabic": ar,
+                    "suggested_arabic": ai_result.get("suggested_arabic", ar),
+                    "reasoning": ai_result.get("reasoning", "Review complete.")
+                })
+                progress_bar.progress((i + 1) / total)
+            
+            st.session_state['processed_data'] = processed_results
             st.session_state['workflow_type'] = 'upload'
             st.rerun()
 
@@ -212,7 +272,7 @@ if st.session_state['processed_data']:
         if st.session_state['workflow_type'] == 'drive':
             if st.button(">>> COMMIT CHANGES TO ORIGINAL DOC <<<", type="primary"):
                 st.warning("Executing Drive update: Wiping document and restructuring blocks...")
-                # Here you would call Google Docs API batchUpdate with the finalized lists
+                # Call Google Docs API batchUpdate with the finalized lists here
                 st.success("Live document updated and rearranged successfully!")
                 
         elif st.session_state['workflow_type'] == 'upload':
