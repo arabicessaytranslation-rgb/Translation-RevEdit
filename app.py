@@ -107,6 +107,11 @@ def review_with_ai(english, arabic, glossary_text):
         response = model.generate_content(prompt)
         return json.loads(response.text)
     except Exception as e:
+        st.error(f"🚨 Detailed AI Error: {e}")
+        try:
+            st.error(f"🚨 Raw AI Response: {response.text}")
+        except:
+            pass
         return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "AI Error. Please review manually."}
 
 def extract_id(url):
@@ -157,9 +162,7 @@ def extract_text_from_drive(file_id):
         st.error(f"Could not read document from Drive. Ensure the bot is an Editor. Error: {e}")
         return None
 
-# --- NEW SMART ALIGNMENT ENGINES ---
 def smart_align_mixed_text(paragraphs):
-    """Uses Regex to detect Arabic Unicode and intelligently stitch broken paragraphs together."""
     pairs = []
     current_en = []
     current_ar = []
@@ -183,7 +186,6 @@ def smart_align_mixed_text(paragraphs):
     return pairs
 
 def smart_align_separate_files(en_paras, ar_paras):
-    """Zips files and handles length mismatches gracefully without crashing."""
     pairs = []
     max_len = max(len(en_paras), len(ar_paras))
     for i in range(max_len):
@@ -222,7 +224,6 @@ with tab1:
             paras = extract_text_from_drive(file_id)
             
             if paras:
-                # Apply smart regex detection
                 smart_pairs = smart_align_mixed_text(paras)
                 
                 st.info(f"File read successfully! Smart detection found {len(smart_pairs)} translation pairs. Sending to AI...")
@@ -259,7 +260,6 @@ with tab2:
         en_paras = extract_text_from_pdf(file_en.read()) if file_en.name.endswith('.pdf') else extract_text_from_docx(file_en.read())
         ar_paras = extract_text_from_pdf(file_ar.read()) if file_ar.name.endswith('.pdf') else extract_text_from_docx(file_ar.read())
         
-        # Apply mismatch-safe pairing
         smart_pairs = smart_align_separate_files(en_paras, ar_paras)
         
         if len(en_paras) != len(ar_paras):
