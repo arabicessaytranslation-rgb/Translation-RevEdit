@@ -3,7 +3,6 @@ import re
 import io
 import json
 import docx
-from docx.shared import Pt
 import fitz  # PyMuPDF
 import google.generativeai as genai
 from google.oauth2 import service_account
@@ -15,7 +14,7 @@ from googleapiclient.discovery import build
 st.set_page_config(page_title="12-Step Translation Reviewer", layout="wide")
 
 GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
-GLOSSARY_RANGE = "'المصطلحات'!C:D" # Assumes English is Column C, Arabic is Column D
+GLOSSARY_RANGE = "'المصطلحات'!C:D" 
 
 def check_password():
     if "password_correct" not in st.session_state:
@@ -60,7 +59,6 @@ def get_google_services():
 docs_service, drive_service, sheets_service = get_google_services()
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
-# Setup the AI Model (Using Gemini 1.5 Flash for speed)
 generation_config = {"response_mime_type": "application/json"}
 model = genai.GenerativeModel('gemini-1.5-flash', generation_config=generation_config)
 
@@ -69,9 +67,6 @@ model = genai.GenerativeModel('gemini-1.5-flash', generation_config=generation_c
 # ==========================================
 @st.cache_data(ttl=3600)
 def fetch_glossary():
-    """Fetches English/Arabic pairs from the Google Sheet."""
-    if GLOSSARY_SPREADSHEET_ID == "YOUR_SPREADSHEET_ID_HERE":
-        return "No glossary connected."
     try:
         sheet = sheets_service.spreadsheets()
         result = sheet.values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_RANGE).execute()
@@ -87,7 +82,6 @@ def fetch_glossary():
         return ""
 
 def review_with_ai(english, arabic, glossary_text):
-    """Sends a single paragraph pair to Gemini for review against the glossary."""
     prompt = f"""
     You are an expert translator specializing in 12-step recovery literature. 
     Your tone must be clinical, professional, and non-moralizing.
@@ -112,58 +106,79 @@ def review_with_ai(english, arabic, glossary_text):
     except Exception as e:
         return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "AI Error. Please review manually."}
 
-def extract_file_id(url):
-    match = re.search(r"/d/([a-zA-Z0-9-_]+)", url)
-    return match.group(1) if match else None
-
-def extract_text_from_google_doc(file_id):
-    """Reads the live text from a Google Doc."""
-    try:
-        document = docs_service.documents().get(documentId=file_id).execute()
-        paragraphs = []
-        for element in document.get('body').get('content', []):
-            if 'paragraph' in element:
-                para_text = ""
-                for elem in element.get('paragraph').get('elements', []):
-                    if 'textRun' in elem:
-                        para_text += elem.get('textRun').get('content')
-                clean_text = para_text.strip()
-                if clean_text:
-                    paragraphs.append(clean_text)
-        return paragraphs
-    except Exception as e:
-        st.error(f"Could not read document. Ensure the bot is an Editor. Error: {e}")
-        return None
+def extract_id(url):
+    """Extracts the ID from a Google Docs, Drive File, or Drive Folder URL."""
+    match = re.search(r"/(?:d|folders)/([a-zA-Z0-9-_]+)", url)
+    if match: return match.group(1)
+    match_param = re.search(r"id=([a-zA-Z0-9-_]+)", url)
+    if match_param: return match_param.group(1)
+    if re.match(r"^[a-zA-Z0-9-_]+$", url.strip()): return url.strip()
+    return None
 
 def extract_text_from_pdf(file_bytes):
     pdf_document = fitz.open(stream=file_bytes, filetype="pdf")
     full_text = ""
     for page_num in range(len(pdf_document)):
         full_text += pdf_document.load_page(page_num).get_text("text") + "\n"
-    
-    cleaned = [p.replace('\n', ' ').strip() for p in full_text.split('\n\n') if p.replace('\n', ' ').strip()]
-    return cleaned
+    return [p.replace('\n', ' ').strip() for p in full_text.split('\n\n') if p.replace('\n', ' ').strip()]
 
 def extract_text_from_docx(file_bytes):
     doc = docx.Document(io.BytesIO(file_bytes))
     return [p.text.strip() for p in doc.paragraphs if p.text.strip()]
 
-def build_final_docx(arabic_texts, english_texts):
-    doc = docx.Document()
-    for text in arabic_texts:
-        p = doc.add_paragraph(text)
-        p.style.font.name = 'Arial'
-        p.style.font.size = Pt(12)
-    doc.add_page_break()
-    for text in english_texts:
-        p = doc.add_paragraph(text)
-        p.style.font.name = 'Arial'
-        p.style.font.size = Pt(12)
+def extract_text_from_drive(file_id):
+    try:
+        file_meta = drive_service.files().get(fileId=file_id, fields="mimeType").execute()
+        mime_type = file_meta.get("mimeType")
+        
+        if mime_type == 'application/vnd.google-apps.document':
+            document = docs_service.documents().get(documentId=file_id).execute()
+            paragraphs = []
+            for element in document.get('body').get('content', []):
+                if 'paragraph' in element:
+                    para_text = ""
+                    for elem in element.get('paragraph').get('elements', []):
+                        if 'textRun' in elem:
+                            para_text += elem.get('textRun').get('content')
+                    clean_text = para_text.strip()
+                    if clean_text: paragraphs.append(clean_text)
+            return paragraphs
+            
+        elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+            request = drive_service.files().get_media(fileId=file_id)
+            file_bytes = request.execute()
+            return extract_text_from_docx(file_bytes)
+        else:
+            st.error(f"Unsupported file type. Found: {mime_type}")
+            return None
+    except Exception as e:
+        st.error(f"Could not read document from Drive. Ensure the bot is an Editor. Error: {e}")
+        return None
+
+def create_new_google_doc(folder_id, title, arabic_texts, english_texts):
+    """Creates a new Google Doc in the specified folder and populates it with text."""
+    # 1. Create the blank file in the specific folder
+    file_metadata = {
+        'name': title,
+        'mimeType': 'application/vnd.google-apps.document',
+        'parents': [folder_id]
+    }
+    doc = drive_service.files().create(body=file_metadata, fields='id').execute()
+    doc_id = doc.get('id')
     
-    file_stream = io.BytesIO()
-    doc.save(file_stream)
-    file_stream.seek(0)
-    return file_stream
+    # 2. Prepare the text
+    en_text = "\n\n".join(english_texts) + "\n"
+    ar_text = "\n\n".join(arabic_texts) + "\n"
+    
+    # 3. Batch insert (We insert in reverse order at index 1 so everything stacks properly)
+    requests = [
+        {'insertText': {'location': {'index': 1}, 'text': en_text}},     # Bottom: English
+        {'insertPageBreak': {'location': {'index': 1}}},                 # Middle: Page Break
+        {'insertText': {'location': {'index': 1}, 'text': ar_text}}      # Top: Arabic
+    ]
+    
+    docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': requests}).execute()
+    return doc_id
 
 # ==========================================
 # 4. DASHBOARD UI & ROUTING
@@ -178,37 +193,31 @@ else:
 
 if 'processed_data' not in st.session_state:
     st.session_state['processed_data'] = None
-if 'workflow_type' not in st.session_state:
-    st.session_state['workflow_type'] = None
 
 tab1, tab2 = st.tabs(["Method 1: Google Drive Link (In-Place)", "Method 2: Direct File Upload"])
 
 # --- TAB 1: GOOGLE DRIVE ---
 with tab1:
-    st.write("Paste a Google Doc URL to edit the document directly in-place.")
-    doc_url = st.text_input("Paste Google Doc URL Here:")
+    st.write("Paste a Google Doc or Word URL to review the document.")
+    doc_url = st.text_input("Paste Google Drive File URL Here:")
     
     if st.button("Load from Drive") and doc_url:
-        file_id = extract_file_id(doc_url)
+        file_id = extract_id(doc_url)
         if not file_id:
             st.error("Invalid Google Drive URL.")
         else:
             st.info(f"Connecting to Document ID: {file_id}...")
-            
-            # Fetch actual text from live document
-            paras = extract_text_from_google_doc(file_id)
+            paras = extract_text_from_drive(file_id)
             
             if paras:
-                # Split the alternating paragraphs into pairs
-                en_paras = paras[0::2] # Evens (English)
-                ar_paras = paras[1::2] # Odds (Arabic)
+                en_paras = paras[0::2]
+                ar_paras = paras[1::2]
                 
                 if len(en_paras) != len(ar_paras):
                     st.error(f"⚠️ Alignment Warning: Found {len(en_paras)} English paragraphs and {len(ar_paras)} Arabic paragraphs. The document must alternate exactly.")
                 else:
                     st.info("File read successfully! Sending to AI for review. This may take a moment...")
                     progress_bar = st.progress(0)
-                    
                     processed_results = []
                     total = len(en_paras)
                     
@@ -225,13 +234,11 @@ with tab1:
                         progress_bar.progress((i + 1) / total)
                     
                     st.session_state['processed_data'] = processed_results
-                    st.session_state['workflow_type'] = 'drive'
-                    st.session_state['file_id'] = file_id
                     st.rerun()
 
 # --- TAB 2: FILE UPLOAD ---
 with tab2:
-    st.write("Upload separate files to generate a finalized .docx document.")
+    st.write("Upload separate files to review the translation.")
     colA, colB = st.columns(2)
     with colA:
         file_en = st.file_uploader("1. Upload English Source", type=["docx", "pdf"])
@@ -247,7 +254,6 @@ with tab2:
         else:
             st.info("Files aligned! Sending to AI for review. This may take a moment...")
             progress_bar = st.progress(0)
-            
             processed_results = []
             total = len(en_paras)
             
@@ -264,11 +270,10 @@ with tab2:
                 progress_bar.progress((i + 1) / total)
             
             st.session_state['processed_data'] = processed_results
-            st.session_state['workflow_type'] = 'upload'
             st.rerun()
 
 # ==========================================
-# 5. THE REVIEW GRID (UNIVERSAL)
+# 5. THE REVIEW GRID & EXPORT
 # ==========================================
 if st.session_state['processed_data']:
     st.divider()
@@ -300,29 +305,34 @@ if st.session_state['processed_data']:
                     finalized_english_list.append(item['english'])
             st.divider()
 
-    # ==========================================
-    # 6. COMMIT / EXPORT LOGIC
-    # ==========================================
     total_segments = len(st.session_state['processed_data'])
     st.write(f"**Approved Changes: {approved_count} / {total_segments}**")
     
     if approved_count == total_segments:
-        if st.session_state['workflow_type'] == 'drive':
-            if st.button(">>> COMMIT CHANGES TO ORIGINAL DOC <<<", type="primary"):
-                st.warning("Executing Drive update: Wiping document and restructuring blocks...")
-                # Call Google Docs API batchUpdate with the finalized lists here
-                st.success("Live document updated and rearranged successfully!")
-                
-        elif st.session_state['workflow_type'] == 'upload':
-            st.success("All segments approved! You can now download the finalized document.")
-            final_docx = build_final_docx(finalized_arabic_list, finalized_english_list)
-            st.download_button(
-                label="📥 Download Finalized .docx Document",
-                data=final_docx,
-                file_name="Final_Translated_Review.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                type="primary"
-            )
+        st.subheader("💾 Export to Google Drive")
+        st.write("Save the finalized translation as a brand new Google Doc.")
+        
+        col_name, col_folder = st.columns(2)
+        with col_name:
+            new_file_name = st.text_input("New Document Name:", value="Final_Reviewed_Translation")
+        with col_folder:
+            folder_url = st.text_input("Destination Folder URL (Must be shared with bot):")
+            
+        if st.button(">>> CREATE FINALIZED GOOGLE DOC <<<", type="primary"):
+            if not folder_url:
+                st.error("Please enter a Destination Folder URL.")
+            else:
+                folder_id = extract_id(folder_url)
+                if not folder_id:
+                    st.error("Invalid Folder URL.")
+                else:
+                    with st.spinner("Creating new document in Drive..."):
+                        try:
+                            doc_id = create_new_google_doc(folder_id, new_file_name, finalized_arabic_list, finalized_english_list)
+                            st.success(f"✅ Document '{new_file_name}' created successfully!")
+                            st.markdown(f"**[🔗 Click here to open your new document](https://docs.google.com/document/d/{doc_id}/edit)**")
+                        except Exception as e:
+                            st.error(f"Failed to create document. Ensure the bot is an Editor of the destination folder. Error: {e}")
     else:
-        st.button(">>> FINALIZE DOCUMENT <<<", disabled=True)
+        st.button(">>> CREATE FINALIZED GOOGLE DOC <<<", disabled=True)
         st.caption("You must approve all segments before finalizing.")
