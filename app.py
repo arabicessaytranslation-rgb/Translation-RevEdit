@@ -4,11 +4,18 @@ import io
 import json
 import docx
 import fitz  # PyMuPDF
-from google import genai
-from google.genai import types
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from pydantic import BaseModel
+
+# --- NEW Google GenAI SDK (google-genai package) ---
+# Requires: pip install google-genai
+try:
+    from google import genai
+    from google.genai import types
+    GENAI_AVAILABLE = True
+except ImportError:
+    GENAI_AVAILABLE = False
 
 # ==========================================
 # 1. CONFIGURATION & SECRETS
@@ -61,17 +68,9 @@ def get_google_services():
 docs_service, drive_service, sheets_service = get_google_services()
 
 # --- GEMINI SETUP (NEW google-genai SDK) ---
-# The new SDK uses a central Client object instead of module-level configure().
-# See: https://ai.google.dev/gemini-api/docs/migrate
-
-# Model name — the new SDK expects just the model name (no "models/" prefix).
 MODEL_NAME = "gemini-3.6-flash"
-
-# Fallback models if the primary is unavailable on your account/region.
 FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.0-flash"]
 
-# --- Define the structured output schema using Pydantic ---
-# The Interactions API uses response_format with a JSON schema for structured output.
 class ReviewResult(BaseModel):
     status: str
     suggested_arabic: str
@@ -79,11 +78,13 @@ class ReviewResult(BaseModel):
 
 @st.cache_resource
 def get_genai_client():
-    """
-    Create the centralized GenAI client.
-    In the new SDK, this single client is the entry point for all API calls
-    (models, interactions, files, caches, etc.).
-    """
+    """Create the centralized GenAI client for the new SDK."""
+    if not GENAI_AVAILABLE:
+        st.error(
+            "❌ The `google-genai` package is not installed. "
+            "Add `google-genai` to your requirements.txt and redeploy."
+        )
+        return None
     return genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 
 client = get_genai_client()
@@ -124,6 +125,10 @@ Note: "status" must be one of: "perfect", "minor_edits", or "major_rewrite".
 """
 
 def review_with_ai(english, arabic, glossary_text):
+    if not GENAI_AVAILABLE or client is None:
+        return {"status": "major_rewrite", "suggested_arabic": arabic,
+                "reasoning": "google-genai SDK not available. Add 'google-genai' to requirements.txt."}
+
     if "[MISSING" in english or "[MISSING" in arabic:
         return {"status": "major_rewrite", "suggested_arabic": arabic,
                 "reasoning": "Alignment mismatch detected. Manual input required."}
@@ -145,7 +150,6 @@ def review_with_ai(english, arabic, glossary_text):
                 ],
             )
 
-            # Extract the JSON text from the interaction output
             raw_text = interaction.output_text
 
             clean_text = raw_text.replace("```json", "").replace("```", "").strip()
@@ -164,12 +168,9 @@ def review_with_ai(english, arabic, glossary_text):
             err_str = f"{type(e).__name__} - {str(e)}"
             last_error = err_str
 
-            # If the model is unavailable, try the next fallback.
             if any(keyword in err_str for keyword in
                    ("NotFound", "404", "no longer available", "not found", "not supported")):
                 continue
-
-            # Non-404 error → stop trying fallbacks.
             break
 
     return {"status": "major_rewrite", "suggested_arabic": arabic,
