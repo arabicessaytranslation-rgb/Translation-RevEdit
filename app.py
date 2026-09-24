@@ -57,6 +57,8 @@ def get_google_services():
         return None, None, None
 
 docs_service, drive_service, sheets_service = get_google_services()
+
+# --- GEMINI SETUP WITH AUTOMATIC COMPATIBILITY RESOLUTION ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
 safety_settings = [
@@ -66,12 +68,57 @@ safety_settings = [
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
 ]
 
-generation_config = {"response_mime_type": "application/json"}
-model = genai.GenerativeModel(
-    'gemini-1.5-flash', 
-    generation_config=generation_config,
-    safety_settings=safety_settings
-)
+@st.cache_resource
+def get_gemini_model():
+    """Dynamically finds the best available model supported by the API key."""
+    preferred_models = [
+        "models/gemini-1.5-flash",
+        "models/gemini-1.5-flash-latest",
+        "models/gemini-1.5-pro",
+        "models/gemini-1.0-pro",
+        "gemini-1.5-flash",
+        "gemini-pro"
+    ]
+    
+    try:
+        available_models = [
+            m.name for m in genai.list_models() 
+            if 'generateContent' in m.supported_generation_methods
+        ]
+        
+        # Select first matching preferred model that exists in available list
+        selected_model_name = None
+        for pref in preferred_models:
+            if pref in available_models or pref.replace("models/", "") in [m.replace("models/", "") for m in available_models]:
+                selected_model_name = pref
+                break
+                
+        if not selected_model_name and available_models:
+            selected_model_name = available_models[0]
+            
+        if not selected_model_name:
+            selected_model_name = "gemini-1.5-flash"
+            
+    except Exception:
+        # Fallback if list_models fails
+        selected_model_name = "models/gemini-1.5-flash-latest"
+
+    generation_config = {"response_mime_type": "application/json"}
+    
+    try:
+        return genai.GenerativeModel(
+            selected_model_name,
+            generation_config=generation_config,
+            safety_settings=safety_settings
+        )
+    except Exception:
+        # Secondary fallback without JSON mime restriction
+        return genai.GenerativeModel(
+            selected_model_name,
+            safety_settings=safety_settings
+        )
+
+model = get_gemini_model()
 
 # ==========================================
 # 3. HELPER FUNCTIONS
