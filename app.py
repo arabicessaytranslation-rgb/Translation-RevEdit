@@ -14,9 +14,8 @@ from googleapiclient.discovery import build
 # ==========================================
 st.set_page_config(page_title="12-Step Translation Reviewer", layout="wide")
 
-# ---> REPLACE THESE TWO LINES WITH YOUR ACTUAL SHEET DETAILS <---
 GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
-GLOSSARY_RANGE = "'المصطلحات'!C:D" # Assumes English is Column A, Arabic is Column B
+GLOSSARY_RANGE = "'المصطلحات'!C:D" # Assumes English is Column C, Arabic is Column D
 
 def check_password():
     if "password_correct" not in st.session_state:
@@ -117,6 +116,25 @@ def extract_file_id(url):
     match = re.search(r"/d/([a-zA-Z0-9-_]+)", url)
     return match.group(1) if match else None
 
+def extract_text_from_google_doc(file_id):
+    """Reads the live text from a Google Doc."""
+    try:
+        document = docs_service.documents().get(documentId=file_id).execute()
+        paragraphs = []
+        for element in document.get('body').get('content', []):
+            if 'paragraph' in element:
+                para_text = ""
+                for elem in element.get('paragraph').get('elements', []):
+                    if 'textRun' in elem:
+                        para_text += elem.get('textRun').get('content')
+                clean_text = para_text.strip()
+                if clean_text:
+                    paragraphs.append(clean_text)
+        return paragraphs
+    except Exception as e:
+        st.error(f"Could not read document. Ensure the bot is an Editor. Error: {e}")
+        return None
+
 def extract_text_from_pdf(file_bytes):
     pdf_document = fitz.open(stream=file_bytes, filetype="pdf")
     full_text = ""
@@ -176,20 +194,40 @@ with tab1:
             st.error("Invalid Google Drive URL.")
         else:
             st.info(f"Connecting to Document ID: {file_id}...")
-            # Simulated Drive extraction for the skeleton UI
-            st.session_state['processed_data'] = [
-                {
-                    "id": 1,
-                    "status": "minor_edits",
-                    "english": "The obsession of the mind will eventually cease.",
-                    "original_arabic": "سوف تتوقف وسوسة العقل في النهاية.",
-                    "suggested_arabic": "ستتوقف الوساوس القهرية للعقل في نهاية المطاف.",
-                    "reasoning": "Clinical context: changed literal translation to clinical MSA terminology."
-                }
-            ]
-            st.session_state['workflow_type'] = 'drive'
-            st.session_state['file_id'] = file_id
-            st.rerun()
+            
+            # Fetch actual text from live document
+            paras = extract_text_from_google_doc(file_id)
+            
+            if paras:
+                # Split the alternating paragraphs into pairs
+                en_paras = paras[0::2] # Evens (English)
+                ar_paras = paras[1::2] # Odds (Arabic)
+                
+                if len(en_paras) != len(ar_paras):
+                    st.error(f"⚠️ Alignment Warning: Found {len(en_paras)} English paragraphs and {len(ar_paras)} Arabic paragraphs. The document must alternate exactly.")
+                else:
+                    st.info("File read successfully! Sending to AI for review. This may take a moment...")
+                    progress_bar = st.progress(0)
+                    
+                    processed_results = []
+                    total = len(en_paras)
+                    
+                    for i, (en, ar) in enumerate(zip(en_paras, ar_paras)):
+                        ai_result = review_with_ai(en, ar, glossary_data)
+                        processed_results.append({
+                            "id": i + 1,
+                            "status": ai_result.get("status", "minor_edits"),
+                            "english": en,
+                            "original_arabic": ar,
+                            "suggested_arabic": ai_result.get("suggested_arabic", ar),
+                            "reasoning": ai_result.get("reasoning", "Review complete.")
+                        })
+                        progress_bar.progress((i + 1) / total)
+                    
+                    st.session_state['processed_data'] = processed_results
+                    st.session_state['workflow_type'] = 'drive'
+                    st.session_state['file_id'] = file_id
+                    st.rerun()
 
 # --- TAB 2: FILE UPLOAD ---
 with tab2:
