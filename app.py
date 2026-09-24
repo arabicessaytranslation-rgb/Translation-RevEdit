@@ -58,7 +58,7 @@ def get_google_services():
 
 docs_service, drive_service, sheets_service = get_google_services()
 
-# --- GEMINI SETUP WITH AUTOMATIC COMPATIBILITY RESOLUTION ---
+# --- GEMINI SETUP WITH ACTIVE MODEL DETECTION ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
 safety_settings = [
@@ -70,38 +70,48 @@ safety_settings = [
 
 @st.cache_resource
 def get_gemini_model():
-    """Dynamically finds the best available model supported by the API key."""
+    """Finds the currently active Gemini model supported by the API key."""
+    # List candidate model names in order of preference
     preferred_models = [
-        "models/gemini-1.5-flash",
-        "models/gemini-1.5-flash-latest",
-        "models/gemini-1.5-pro",
-        "models/gemini-1.0-pro",
+        "gemini-2.5-flash",
+        "models/gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "models/gemini-2.0-flash",
         "gemini-1.5-flash",
-        "gemini-pro"
+        "models/gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "models/gemini-1.5-flash-latest"
     ]
     
+    selected_model_name = None
     try:
-        available_models = [
-            m.name for m in genai.list_models() 
-            if 'generateContent' in m.supported_generation_methods
+        # Query the API directly to see which models are active and support generateContent
+        supported = [
+            m.name for m in genai.list_models()
+            if 'generateContent' in getattr(m, 'supported_generation_methods', [])
         ]
         
-        # Select first matching preferred model that exists in available list
-        selected_model_name = None
+        # 1. Match against preferred models
         for pref in preferred_models:
-            if pref in available_models or pref.replace("models/", "") in [m.replace("models/", "") for m in available_models]:
-                selected_model_name = pref
+            short_name = pref.replace("models/", "")
+            for candidate in supported:
+                if candidate == pref or candidate.replace("models/", "") == short_name:
+                    selected_model_name = candidate
+                    break
+            if selected_model_name:
                 break
                 
-        if not selected_model_name and available_models:
-            selected_model_name = available_models[0]
-            
-        if not selected_model_name:
-            selected_model_name = "gemini-1.5-flash"
+        # 2. If no preferred matched, pick any active flash or gemini model
+        if not selected_model_name and supported:
+            flash_models = [m for m in supported if "flash" in m.lower()]
+            selected_model_name = flash_models[0] if flash_models else supported[0]
             
     except Exception:
-        # Fallback if list_models fails
-        selected_model_name = "models/gemini-1.5-flash-latest"
+        # Fallback to direct name if list_models is restricted
+        selected_model_name = "gemini-2.5-flash"
+        
+    if not selected_model_name:
+        selected_model_name = "gemini-2.5-flash"
 
     generation_config = {"response_mime_type": "application/json"}
     
@@ -112,7 +122,6 @@ def get_gemini_model():
             safety_settings=safety_settings
         )
     except Exception:
-        # Secondary fallback without JSON mime restriction
         return genai.GenerativeModel(
             selected_model_name,
             safety_settings=safety_settings
