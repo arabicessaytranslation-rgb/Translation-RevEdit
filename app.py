@@ -217,11 +217,16 @@ def _call_gemini(model_name: str, prompt: str):
             response_mime_type="application/json",
             response_schema=ReviewResult,
             safety_settings=safety_settings,
-            temperature=0.2, # slightly increased to allow semantic reasoning
+            temperature=0.2, 
         ),
     )
     if not response.text:
         feedback = getattr(response, 'prompt_feedback', 'Safety blocked')
         raise ValueError(f"Empty output from model: {feedback}")
 
-    clean_text = response.text.replace("```json", "").replace("
+    # Switched to single quotes to prevent copy-paste line breaks
+    clean_text = response.text.replace('```json', '').replace('```', '').strip()
+    match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+    if match:
+        clean_text = match.group(0)
+    return json.loads(clean_text)
