@@ -313,15 +313,17 @@ def extract_text_from_pdf(file_bytes: bytes):
             blocks.append(clean_text)
     return blocks
 
-def extract_text_from_docx(file_bytes: bytes):
+defdef extract_text_from_docx(file_bytes: bytes):
     doc = docx.Document(io.BytesIO(file_bytes))
     blocks = []
     
+    # 1. Standard body paragraphs
     for p in doc.paragraphs:
         clean_text = p.text.strip()
         if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)): 
             blocks.append(clean_text)
             
+    # 2. Standard tables
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
@@ -330,6 +332,19 @@ def extract_text_from_docx(file_bytes: bytes):
                     if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)):
                         if not blocks or blocks[-1] != clean_text:
                             blocks.append(clean_text)
+
+    # 3. Hidden Text Boxes / Shapes (w:txbxContent)
+    # This extracts text that translators put inside floating frames or boxes
+    try:
+        # Search the document XML for any text box containers
+        for txbx in doc.element.xpath('//w:txbxContent//w:p'):
+            para_text = "".join(node.text for node in txbx.xpath('.//w:t') if node.text).strip()
+            if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', para_text)):
+                if not blocks or blocks[-1] != para_text:
+                    blocks.append(para_text)
+    except Exception:
+        pass
+
     return blocks
 
 def _parse_docs_elements(elements):
