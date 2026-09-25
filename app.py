@@ -225,20 +225,20 @@ def _call_gemini(model_name: str, prompt: str, schema_type):
 
 # --- SINGLE ITEM AI CALLS (THE FAILSAFES) ---
 def translate_with_ai(english: str, glossary_text: str):
-prompt = f"""You are an expert bilingual translator specializing in 12-step recovery literature. 
-Translate the following English segments into Arabic accurately. Ensure the tone remains clinical, professional, and non-moralizing.
+    prompt = f"""You are an expert bilingual translator specializing in 12-step recovery literature. 
+Translate the English text into Arabic accurately, ensuring the tone remains clinical, professional, and non-moralizing.
 
-CRITICAL INSTRUCTIONS FOR THIS BATCH:
-1. Narrative Flow: These segments are sequential parts of a single document. Maintain consistent grammatical gender, tone, and pronoun references across all segments.
-2. Contextual Nuance: Do not perform blind word-for-word replacements. Actively understand the semantic meaning.
-3. Pronoun Resolution: When English pronouns like "it" or "we" appear (e.g., "it works", "we admitted"), ensure the Arabic translation reflects the correct contextual noun (e.g., "the program", "the fellowship") and its proper Arabic grammatical gender.
-4. Glossary Integration: Apply the glossary terms naturally into the sentence flow without forcing them if the grammar breaks.
+CRITICAL INSTRUCTIONS:
+- Do not perform blind word-for-word replacements. Actively understand semantic meaning.
+- When pronouns like "it" appear (e.g., "it works") referring to concepts such as "the program", ensure the Arabic translation reflects the correct contextual noun/glossary term and grammatical gender.
+- Apply the glossary terms naturally into the sentence flow.
 
 GLOSSARY TERMS:
 {glossary_text}
 
-\n\nSegments to Translate:
-{input_payload}"""
+Translate:
+English Source: "{english}"
+"""
     active_models = get_fallback_models()
     for model_name in active_models:
         for attempt in range(MAX_RETRIES_PER_MODEL):
@@ -254,8 +254,23 @@ GLOSSARY TERMS:
     return {"arabic_translation": "", "glossary_notes": f"⚠️ Fallback Error."}
 
 def review_with_ai(english: str, arabic: str, glossary_text: str):
-    prompt = f"""You are an expert bilingual editor for 12-step recovery literature. 
-GLOSSARY TERMS:\n{glossary_text}\nReview this pair:\nEnglish Source: "{english}"\nOriginal Arabic: "{arabic}"\nCorrect the Arabic if it misses glossary nuances or sounds unnatural."""
+    prompt = f"""You are an expert bilingual editor specializing in 12-step recovery literature. 
+Ensure the Arabic translation is accurate, clinical, professional, and grammatically sound.
+
+CRITICAL INSTRUCTIONS:
+- Do not perform blind word-for-word replacements.
+- If English pronouns refer to specific concepts (e.g. "it works" referring to "the program"), verify the Arabic contextually renders this clearly.
+- Respect recovery glossary terms and verify sentence flow.
+
+GLOSSARY TERMS:
+{glossary_text}
+
+Review this pair:
+English Source: "{english}"
+Original Arabic: "{arabic}"
+
+If the translation captures meaning and tone accurately, leave it as is. If it misses glossary nuance or sounds unnatural, provide the polished Arabic translation.
+"""
     active_models = get_fallback_models()
     for model_name in active_models:
         for attempt in range(MAX_RETRIES_PER_MODEL):
@@ -276,10 +291,21 @@ def translate_batch_with_fallback(batch_segments, glossary_text):
         return [translate_with_ai(seg['english'], glossary_text) for seg in batch_segments]
 
     input_payload = "\n\n".join([f"ID: {seg['id']}\nText: {seg['english']}" for seg in batch_segments])
-    prompt = f"""You are an expert bilingual translator for 12-step recovery literature. 
-Translate the following segments accurately, maintaining contextual flow between them. 
-GLOSSARY TERMS:\n{glossary_text}
-\n\nSegments to Translate:\n{input_payload}"""
+    
+    prompt = f"""You are an expert bilingual translator specializing in 12-step recovery literature. 
+Translate the following English segments into Arabic accurately. Ensure the tone remains clinical, professional, and non-moralizing.
+
+CRITICAL INSTRUCTIONS FOR THIS BATCH:
+1. Narrative Flow: These segments are sequential parts of a single document. Maintain consistent grammatical gender, tone, and pronoun references across all segments.
+2. Contextual Nuance: Do not perform blind word-for-word replacements. Actively understand the semantic meaning.
+3. Pronoun Resolution: When English pronouns like "it" or "we" appear (e.g., "it works", "we admitted"), ensure the Arabic translation reflects the correct contextual noun (e.g., "the program", "the fellowship") and its proper Arabic grammatical gender.
+4. Glossary Integration: Apply the glossary terms naturally into the sentence flow without forcing them if the grammar breaks.
+
+GLOSSARY TERMS:
+{glossary_text}
+
+Segments to Translate:
+{input_payload}"""
 
     active_models = get_fallback_models()
     for model_name in active_models:
@@ -312,10 +338,20 @@ def review_batch_with_fallback(batch_segments, glossary_text):
         return [review_with_ai(seg['english'], seg['arabic'], glossary_text) for seg in batch_segments]
 
     input_payload = "\n\n".join([f"ID: {seg['id']}\nEnglish: {seg['english']}\nArabic: {seg['arabic']}" for seg in batch_segments])
-    prompt = f"""You are an expert bilingual editor for 12-step recovery literature. 
-Review the following English/Arabic pairs for accuracy and glossary adherence.
-GLOSSARY TERMS:\n{glossary_text}
-\n\nPairs to Review:\n{input_payload}"""
+    
+    prompt = f"""You are an expert bilingual editor specializing in 12-step recovery literature. 
+Review the following English/Arabic pairs for accuracy, tone, and glossary adherence. Ensure the tone remains clinical, professional, and non-moralizing.
+
+CRITICAL INSTRUCTIONS FOR THIS BATCH:
+1. Narrative Flow: These segments are sequential parts of a single document. Maintain consistent grammatical gender, tone, and pronoun references across all segments.
+2. Contextual Nuance: Do not perform blind word-for-word replacements. Actively understand the semantic meaning.
+3. Glossary Integration: Respect recovery glossary terms. If the existing Arabic translation captures the meaning and tone accurately, leave it as is. If it misses glossary nuance or sounds unnatural, provide the polished Arabic translation.
+
+GLOSSARY TERMS:
+{glossary_text}
+
+Pairs to Review:
+{input_payload}"""
 
     active_models = get_fallback_models()
     for model_name in active_models:
@@ -655,8 +691,56 @@ if st.session_state["input_method"] == "drive":
 
 elif st.session_state["input_method"] == "upload":
     st.info("File upload ignores the Push-to-Drive feature. Use Drive Input for full write-back automation.")
-    # Standard logic applies here (omitted for brevity, follows exact same batch loop mapping as above)
-    pass
+    # File upload logic remains simple because it can't write back
+    file_upload = st.file_uploader("Upload Source File", type=["docx", "pdf"])
+    if st.button("Process File") and file_upload:
+        paras = extract_text_from_pdf(file_upload.read()) if file_upload.name.endswith('.pdf') else extract_text_from_docx(file_upload.read())
+        if paras:
+            st.info(f"Extracted {len(paras)} segments. Please wait...")
+            progress_bar = st.progress(0)
+            processed_results = []
+            
+            if st.session_state["app_mode"] == "Translator Mode":
+                batches = [paras[i:i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
+                for idx, batch in enumerate(batches):
+                    batch_payload = [{'id': j + 1, 'english': p['text']} for j, p in enumerate(batch)]
+                    ai_results = translate_batch_with_fallback(batch_payload, glossary_data)
+                    for ai_res in ai_results:
+                        processed_results.append({
+                            "id": ai_res['id'] + (idx * BATCH_SIZE),
+                            "english": batch[ai_res['id'] - 1]['text'],
+                            "arabic_translation": ai_res.get("arabic_translation", ""),
+                            "glossary_notes": ai_res.get("glossary_notes", "")
+                        })
+                    progress_bar.progress((idx + 1) / len(batches))
+            else:
+                segments = smart_align_with_anomaly_detection(paras)
+                normal_segs = [s for s in segments if s['status'] == 'normal']
+                batches = [normal_segs[i:i + BATCH_SIZE] for i in range(0, len(normal_segs), BATCH_SIZE)]
+                for idx, batch in enumerate(batches):
+                    ai_results = review_batch_with_fallback(batch, glossary_data)
+                    for ai_res, original_seg in zip(ai_results, batch):
+                        processed_results.append({
+                            "id": original_seg['id'], "status": ai_res.get('status', 'minor_edits'),
+                            "english": original_seg['english'], "original_arabic": original_seg['arabic'],
+                            "suggested_arabic": ai_res.get("suggested_arabic", original_seg['arabic']),
+                            "reasoning": ai_res.get("reasoning", ""), "anomaly": original_seg['anomaly'],
+                            "ar_start": original_seg['ar_start'], "ar_end": original_seg['ar_end']
+                        })
+                    progress_bar.progress((idx + 1) / len(batches))
+                
+                for item in segments:
+                    if item['status'] != 'normal':
+                        processed_results.append({
+                            "id": item['id'], "status": "major_rewrite", 
+                            "english": item['english'], "original_arabic": item['arabic'],
+                            "suggested_arabic": item['arabic'], "reasoning": "⚠️ Orphaned segment.", 
+                            "anomaly": item['anomaly'], "ar_start": None, "ar_end": None
+                        })
+                processed_results.sort(key=lambda x: x['id'])
+                
+            st.session_state['processed_data'] = processed_results
+            st.rerun()
 
 # ==========================================
 # 7. DYNAMIC OUTPUT GRID & PUSH ACTION
