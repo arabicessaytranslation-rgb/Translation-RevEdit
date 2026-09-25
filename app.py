@@ -309,7 +309,43 @@ def extract_text_from_pdf(file_bytes: bytes):
 
 def extract_text_from_docx(file_bytes: bytes):
     doc = docx.Document(io.BytesIO(file_bytes))
-    return [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+    blocks = []
+    
+    # 1. Read normal paragraphs outside tables
+    for p in doc.paragraphs:
+        if p.text.strip(): 
+            blocks.append(p.text.strip())
+            
+    # 2. Read text inside tables (Translators use this 90% of the time)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    clean_text = p.text.strip()
+                    if clean_text:
+                        # Prevent merged-cell duplication glitch in python-docx
+                        if not blocks or blocks[-1] != clean_text:
+                            blocks.append(clean_text)
+    return blocks
+
+def _parse_docs_elements(elements):
+    """Recursively parses Google Docs elements, diving into tables if they exist."""
+    paras = []
+    for elem in elements:
+        if 'paragraph' in elem:
+            para_text = ""
+            for run in elem.get('paragraph').get('elements', []):
+                if 'textRun' in run:
+                    para_text += run.get('textRun').get('content')
+            clean_text = para_text.strip()
+            if clean_text: 
+                paras.append(clean_text)
+        elif 'table' in elem:
+            for row in elem.get('table').get('tableRows', []):
+                for cell in row.get('tableCells', []):
+                    # Recursively pull text from inside the table cell
+                    paras.extend(_parse_docs_elements(cell.get('content', [])))
+    return paras
 
 def extract_text_from_drive(file_id: str, is_retry=False):
     try:
@@ -319,16 +355,8 @@ def extract_text_from_drive(file_id: str, is_retry=False):
 
         if mime_type == 'application/vnd.google-apps.document':
             document = docs_svc.documents().get(documentId=file_id).execute()
-            paragraphs = []
-            for element in document.get('body').get('content', []):
-                if 'paragraph' in element:
-                    para_text = ""
-                    for elem in element.get('paragraph').get('elements', []):
-                        if 'textRun' in elem:
-                            para_text += elem.get('textRun').get('content')
-                    clean_text = para_text.strip()
-                    if clean_text: paragraphs.append(clean_text)
-            return paragraphs
+            # Pass the entire document body into the recursive table parser
+            return _parse_docs_elements(document.get('body').get('content', []))
 
         elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
             request = drive_svc.files().get_media(fileId=file_id)
