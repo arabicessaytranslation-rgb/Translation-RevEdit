@@ -38,7 +38,7 @@ RETRYABLE_KEYWORDS = (
 )
 
 # THROTLED MULTITHREADING FOR FREE TIER (15 RPM)
-MAX_WORKERS = 2 
+MAX_WORKERS = 3 
 
 def check_password():
     if "password_correct" not in st.session_state:
@@ -126,6 +126,12 @@ def get_fallback_models():
     secret_model = st.secrets.get("ACTIVE_MODEL", "").strip()
     if secret_model:
         return [secret_model]
+    
+    # Stable, ultra-fast production models that fully support JSON schemas
+    return [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+    ]
 
     if GENAI_AVAILABLE and client is not None:
         try:
@@ -204,13 +210,10 @@ def _call_gemini(model_name: str, prompt: str, schema_type):
         raise ValueError(f"Empty output from model: {feedback}")
 
     # String multiplier to safely bypass formatting parsers
-    clean_text = response.text.replace("`" * 3 + "json", "").replace("`" * 3, "").strip()
+    max_workers("`" * 3 + "json", "").replace("`" * 3, "").strip()
     match = re.search(r'\{.*\}', clean_text, re.DOTALL)
     if match:
         clean_text = match.group(0)
-        
-    # PACING DELAY: Protects against Free Tier 15 RPM limit
-    time.sleep(2)
         
     return json.loads(clean_text)
 
