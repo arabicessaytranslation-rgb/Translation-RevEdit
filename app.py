@@ -55,7 +55,7 @@ if not check_password():
 
 # --- STATE MANAGEMENT ---
 if "app_mode" not in st.session_state:
-    st.session_state["app_mode"] = "Translator Mode"
+    st.session_state["app_mode"] = "Reviewer Mode"
 
 if 'processed_data' not in st.session_state:
     st.session_state['processed_data'] = None
@@ -309,7 +309,6 @@ def extract_text_from_pdf(file_bytes: bytes):
     blocks = []
     for p in full_text.split('\n\n'):
         clean_text = p.replace('\n', ' ').strip()
-        # Filter: Must contain at least one English or Arabic letter
         if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)):
             blocks.append(clean_text)
     return blocks
@@ -342,7 +341,6 @@ def _parse_docs_elements(elements):
                 if 'textRun' in run:
                     para_text += run.get('textRun').get('content')
             clean_text = para_text.strip()
-            # Filter: Must contain at least one English or Arabic letter
             if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)): 
                 paras.append(clean_text)
         elif 'table' in elem:
@@ -377,75 +375,47 @@ def extract_text_from_drive(file_id: str, is_retry=False):
         return None
 
 def smart_align_with_anomaly_detection(paragraphs: list):
-    tagged = []
+    """
+    Bucket alignment logic: Throws all English blocks and Arabic blocks into separate lists,
+    then pairs them sequentially. Flawlessly handles chunked translations (e.g. all Arabic first, 
+    all English second) without throwing consecutive missing errors.
+    """
+    en_paras = []
+    ar_paras = []
+    
     for p in paragraphs:
-        is_ar = bool(re.search(r'[\u0600-\u06FF]', p))
-        tagged.append({'lang': 'AR' if is_ar else 'EN', 'text': p})
+        if bool(re.search(r'[\u0600-\u06FF]', p)):
+            ar_paras.append(p)
+        else:
+            en_paras.append(p)
 
     aligned_segments = []
-    i = 0
-    seg_id = 1
+    max_len = max(len(en_paras), len(ar_paras))
+    
+    anomaly_msg = None
+    if len(en_paras) != len(ar_paras):
+        anomaly_msg = f"Count Mismatch: Found {len(en_paras)} English blocks vs {len(ar_paras)} Arabic blocks. Alignment may be shifted."
 
-    while i < len(tagged):
-        curr = tagged[i]
-        has_next = (i + 1 < len(tagged))
-        next_item = tagged[i + 1] if has_next else None
+    for i in range(max_len):
+        en_text = en_paras[i] if i < len(en_paras) else "[MISSING ENGLISH SOURCE]"
+        ar_text = ar_paras[i] if i < len(ar_paras) else "[MISSING ARABIC TRANSLATION]"
+        
+        if en_text == "[MISSING ENGLISH SOURCE]":
+            status = 'misaligned_ar'
+        elif ar_text == "[MISSING ARABIC TRANSLATION]":
+            status = 'misaligned_en'
+        else:
+            status = 'normal'
 
-        if curr['lang'] == 'EN' and has_next and next_item['lang'] == 'AR':
-            aligned_segments.append({
-                'id': seg_id,
-                'status': 'normal',
-                'english': curr['text'],
-                'arabic': next_item['text'],
-                'anomaly': None
-            })
-            i += 2
-        elif curr['lang'] == 'AR' and has_next and next_item['lang'] == 'EN':
-            aligned_segments.append({
-                'id': seg_id,
-                'status': 'inverted',
-                'english': next_item['text'],
-                'arabic': curr['text'],
-                'anomaly': 'Inverted Order: Arabic appeared before English in document.'
-            })
-            i += 2
-        elif curr['lang'] == 'EN':
-            aligned_segments.append({
-                'id': seg_id,
-                'status': 'misaligned_en',
-                'english': curr['text'],
-                'arabic': '',
-                'anomaly': 'Out of Order: Consecutive English paragraphs detected without corresponding Arabic.'
-            })
-            i += 1
-        elif curr['lang'] == 'AR':
-            aligned_segments.append({
-                'id': seg_id,
-                'status': 'misaligned_ar',
-                'english': '',
-                'arabic': curr['text'],
-                'anomaly': 'Out of Order: Isolated Arabic paragraph found without preceding English.'
-            })
-            i += 1
-
-        seg_id += 1
+        aligned_segments.append({
+            'id': i + 1,
+            'status': status,
+            'english': en_text,
+            'arabic': ar_text,
+            'anomaly': anomaly_msg
+        })
 
     return aligned_segments
-
-def smart_align_separate_files(en_paras: list, ar_paras: list):
-    pairs = []
-    max_len = max(len(en_paras), len(ar_paras))
-    for i in range(max_len):
-        en = en_paras[i] if i < len(en_paras) else "[MISSING ENGLISH SOURCE]"
-        ar = ar_paras[i] if i < len(ar_paras) else "[MISSING ARABIC TRANSLATION]"
-        pairs.append({
-            "id": i + 1,
-            "status": "normal" if (i < len(en_paras) and i < len(ar_paras)) else "misaligned",
-            "english": en,
-            "arabic": ar,
-            "anomaly": None if (i < len(en_paras) and i < len(ar_paras)) else "File segment count mismatch"
-        })
-    return pairs
 
 # ==========================================
 # 4. DASHBOARD UI & ROUTING
@@ -483,7 +453,7 @@ with tab1:
     if st.session_state["app_mode"] == "Translator Mode":
         st.write("Paste a Google Doc or Word URL containing English text to translate.")
     else:
-        st.write("Paste a Google Doc or Word URL containing alternating English/Arabic text to review.")
+        st.write("Paste a Google Doc or Word URL containing English & Arabic text to review.")
         
     doc_url = st.text_input("Paste Google Drive File URL Here:")
 
@@ -510,14 +480,13 @@ with tab1:
                         })
                         progress_bar.progress((i + 1) / len(paras))
                 else:
-                    # Reviewer Mode with Smart Anomaly Detection
                     segments = smart_align_with_anomaly_detection(paras)
                     st.info(f"Smart Scanner mapped {len(segments)} segments. Processing reviews & resolving anomalies...")
                     progress_bar = st.progress(0)
                     processed_results = []
 
                     for i, item in enumerate(segments):
-                        if item['status'] in ('normal', 'inverted'):
+                        if item['status'] == 'normal':
                             ai_res = review_with_ai(item['english'], item['arabic'], glossary_data)
                             processed_results.append({
                                 "id": item['id'],
@@ -529,7 +498,6 @@ with tab1:
                                 "anomaly": item['anomaly']
                             })
                         elif item['status'] == 'misaligned_en':
-                            # Trigger auto-translation using Google Sheet glossary
                             trans_res = translate_with_ai(item['english'], glossary_data)
                             processed_results.append({
                                 "id": item['id'],
@@ -537,7 +505,7 @@ with tab1:
                                 "english": item['english'],
                                 "original_arabic": "[MISSING IN SOURCE DOCUMENT]",
                                 "suggested_arabic": trans_res.get("arabic_translation", ""),
-                                "reasoning": f"⚠️ Anomaly: {item['anomaly']} Auto-translated using Sheet glossary.",
+                                "reasoning": f"⚠️ Auto-translated from source using Sheet glossary.",
                                 "anomaly": item['anomaly']
                             })
                         elif item['status'] == 'misaligned_ar':
@@ -547,7 +515,7 @@ with tab1:
                                 "english": "[MISSING ENGLISH SOURCE]",
                                 "original_arabic": item['arabic'],
                                 "suggested_arabic": item['arabic'],
-                                "reasoning": f"⚠️ Anomaly: {item['anomaly']} No English source detected.",
+                                "reasoning": f"⚠️ No English source detected for comparison.",
                                 "anomaly": item['anomaly']
                             })
                         progress_bar.progress((i + 1) / len(segments))
@@ -591,36 +559,47 @@ with tab2:
         if st.button("Process Uploaded Files") and file_en and file_ar:
             en_paras = extract_text_from_pdf(file_en.read()) if file_en.name.endswith('.pdf') else extract_text_from_docx(file_en.read())
             ar_paras = extract_text_from_pdf(file_ar.read()) if file_ar.name.endswith('.pdf') else extract_text_from_docx(file_ar.read())
-            smart_pairs = smart_align_separate_files(en_paras, ar_paras)
+            
+            # Using the bucket alignment algorithm
+            smart_pairs = smart_align_with_anomaly_detection(en_paras + ar_paras)
             
             st.info("Aligning files and generating AI review...")
             progress_bar = st.progress(0)
             processed_results = []
+            
             for i, pair in enumerate(smart_pairs):
-                if pair['english'] != "[MISSING ENGLISH SOURCE]" and pair['arabic'] != "[MISSING ARABIC TRANSLATION]":
-                    ai_result = review_with_ai(pair['english'], pair['arabic'], glossary_data)
-                    suggested = ai_result.get("suggested_arabic", pair['arabic'])
-                    status = ai_result.get("status", "minor_edits")
-                    reasoning = ai_result.get("reasoning", "")
-                elif pair['arabic'] == "[MISSING ARABIC TRANSLATION]":
+                if pair['status'] == 'normal':
+                    ai_res = review_with_ai(pair['english'], pair['arabic'], glossary_data)
+                    processed_results.append({
+                        "id": pair['id'],
+                        "status": ai_res.get("status", "minor_edits"),
+                        "english": pair['english'],
+                        "original_arabic": pair['arabic'],
+                        "suggested_arabic": ai_res.get("suggested_arabic", pair['arabic']),
+                        "reasoning": ai_res.get("reasoning", ""),
+                        "anomaly": pair['anomaly']
+                    })
+                elif pair['status'] == 'misaligned_en':
                     trans_res = translate_with_ai(pair['english'], glossary_data)
-                    suggested = trans_res.get("arabic_translation", "")
-                    status = "major_rewrite"
-                    reasoning = "Missing Arabic translation. Auto-generated from source using Glossary."
-                else:
-                    suggested = pair['arabic']
-                    status = "major_rewrite"
-                    reasoning = "Missing English source."
-
-                processed_results.append({
-                    "id": pair['id'],
-                    "status": status,
-                    "english": pair['english'],
-                    "original_arabic": pair['arabic'],
-                    "suggested_arabic": suggested,
-                    "reasoning": reasoning,
-                    "anomaly": pair['anomaly']
-                })
+                    processed_results.append({
+                        "id": pair['id'],
+                        "status": "major_rewrite",
+                        "english": pair['english'],
+                        "original_arabic": "[MISSING IN SOURCE DOCUMENT]",
+                        "suggested_arabic": trans_res.get("arabic_translation", ""),
+                        "reasoning": f"⚠️ Auto-translated from source using Sheet glossary.",
+                        "anomaly": pair['anomaly']
+                    })
+                elif pair['status'] == 'misaligned_ar':
+                    processed_results.append({
+                        "id": pair['id'],
+                        "status": "major_rewrite",
+                        "english": "[MISSING ENGLISH SOURCE]",
+                        "original_arabic": pair['arabic'],
+                        "suggested_arabic": pair['arabic'],
+                        "reasoning": f"⚠️ No English source detected for comparison.",
+                        "anomaly": pair['anomaly']
+                    })
                 progress_bar.progress((i + 1) / len(smart_pairs))
 
             st.session_state['processed_data'] = processed_results
@@ -664,7 +643,6 @@ if st.session_state['processed_data']:
             with st.container(border=True):
                 st.markdown(f"### Segment {item['id']} | Status: {color} {item['status'].upper()}")
 
-                # High-visibility warning banner for structural anomalies
                 if item.get('anomaly'):
                     st.warning(f"⚠️ **Structural Alert:** {item['anomaly']}")
                 
@@ -683,7 +661,6 @@ if st.session_state['processed_data']:
                     else:
                         st.markdown(f"<div dir='rtl' style='text-align: right; background-color: #e0f2fe; padding: 15px; border-radius: 8px; color: #0369a1;'>{item['original_arabic']}</div>", unsafe_allow_html=True)
                 
-                # Visual Changes Diff
                 st.markdown("**Visual Changes (Red = Removed, Green = Added):**")
                 diff_html = generate_html_diff(item['original_arabic'], item['suggested_arabic'])
                 st.markdown(diff_html, unsafe_allow_html=True)
