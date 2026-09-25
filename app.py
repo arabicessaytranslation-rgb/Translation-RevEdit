@@ -225,8 +225,20 @@ def _call_gemini(model_name: str, prompt: str, schema_type):
 
 # --- SINGLE ITEM AI CALLS (THE FAILSAFES) ---
 def translate_with_ai(english: str, glossary_text: str):
-    prompt = f"""You are an expert bilingual translator for 12-step recovery literature. 
-GLOSSARY TERMS:\n{glossary_text}\nTranslate:\nEnglish Source: "{english}"\nEnsure tone is professional and non-moralizing."""
+prompt = f"""You are an expert bilingual translator specializing in 12-step recovery literature. 
+Translate the following English segments into Arabic accurately. Ensure the tone remains clinical, professional, and non-moralizing.
+
+CRITICAL INSTRUCTIONS FOR THIS BATCH:
+1. Narrative Flow: These segments are sequential parts of a single document. Maintain consistent grammatical gender, tone, and pronoun references across all segments.
+2. Contextual Nuance: Do not perform blind word-for-word replacements. Actively understand the semantic meaning.
+3. Pronoun Resolution: When English pronouns like "it" or "we" appear (e.g., "it works", "we admitted"), ensure the Arabic translation reflects the correct contextual noun (e.g., "the program", "the fellowship") and its proper Arabic grammatical gender.
+4. Glossary Integration: Apply the glossary terms naturally into the sentence flow without forcing them if the grammar breaks.
+
+GLOSSARY TERMS:
+{glossary_text}
+
+\n\nSegments to Translate:
+{input_payload}"""
     active_models = get_fallback_models()
     for model_name in active_models:
         for attempt in range(MAX_RETRIES_PER_MODEL):
