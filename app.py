@@ -80,9 +80,9 @@ def get_google_services():
         credentials = service_account.Credentials.from_service_account_info(
             creds_dict,
             scopes=[
-                'https://www.googleapis.com/auth/documents',
-                'https://www.googleapis.com/auth/drive',
-                'https://www.googleapis.com/auth/spreadsheets.readonly'
+                '[https://www.googleapis.com/auth/documents](https://www.googleapis.com/auth/documents)',
+                '[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)',
+                '[https://www.googleapis.com/auth/spreadsheets.readonly](https://www.googleapis.com/auth/spreadsheets.readonly)'
             ]
         )
         docs_service = build('docs', 'v1', credentials=credentials, cache_discovery=False)
@@ -193,5 +193,293 @@ def _call_gemini(model_name: str, prompt: str, schema_type):
         feedback = getattr(response, 'prompt_feedback', 'Safety blocked')
         raise ValueError(f"Empty output from model: {feedback}")
 
-    # Corrected extraction of JSON string
-    clean_text = response.text.replace("```json", "").replace("
+    clean_text = response.text.strip()
+    match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+    if match:
+        clean_text = match.group(0)
+        
+    return json.loads(clean_text)
+
+def translate_with_ai(english: str, glossary_text: str):
+    if not GENAI_AVAILABLE or client is None:
+        return {"arabic_translation": "", "glossary_notes": "SDK Error."}
+
+    prompt = f"""
+You are an expert bilingual translator specializing in 12-step recovery literature. 
+Translate the English text into Arabic accurately, ensuring the tone remains clinical, professional, and non-moralizing.
+
+GLOSSARY & CONTEXTUAL REASONING:
+Do not perform blind word-for-word replacements. Actively understand semantic meaning.
+- When pronouns like "it" appear (e.g., "it works") referring to concepts such as "the program", ensure the Arabic translation reflects the correct contextual noun/glossary term and grammatical gender.
+- Apply the glossary terms naturally into the sentence flow.
+
+GLOSSARY TERMS:
+{glossary_text}
+
+Translate:
+English Source: "{english}"
+"""
+    active_models = get_fallback_models()
+    last_error = None
+
+    for model_name in active_models:
+        for attempt in range(MAX_RETRIES_PER_MODEL):
+            try:
+                parsed = _call_gemini(model_name, prompt, TranslationResult)
+                return {
+                    "arabic_translation": parsed.get("arabic_translation", ""),
+                    "glossary_notes": parsed.get("glossary_notes", f"Translated via {model_name}")
+                }
+            except Exception as e:
+                err_str = f"{type(e).__name__} - {str(e)}"
+                last_error = err_str
+                if any(kw in err_str.lower() for kw in ("notfound", "404", "no longer available", "not found")):
+                    break
+                if _is_retryable(err_str) and attempt < MAX_RETRIES_PER_MODEL - 1:
+                    _backoff_sleep(attempt)
+                    continue
+                break
+
+    return {"arabic_translation": "", "glossary_notes": f"⚠️ API Error: {last_error}"}
+
+def review_with_ai(english: str, arabic: str, glossary_text: str):
+    if not GENAI_AVAILABLE or client is None:
+        return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "SDK Error."}
+
+    prompt = f"""
+You are an expert bilingual editor specializing in 12-step recovery literature. 
+Ensure the Arabic translation is accurate, clinical, professional, and grammatically sound.
+
+GLOSSARY & CONTEXTUAL REASONING:
+Do not perform blind word-for-word replacements.
+- If English pronouns refer to specific concepts (e.g. "it works" referring to "the program"), verify the Arabic contextually renders this clearly.
+- Respect recovery glossary terms and verify sentence flow.
+
+GLOSSARY TERMS:
+{glossary_text}
+
+Review this pair:
+English Source: "{english}"
+Original Arabic: "{arabic}"
+
+If the translation captures meaning and tone accurately, leave it as is. If it misses glossary nuance or sounds unnatural, provide the polished Arabic translation.
+"""
+    active_models = get_fallback_models()
+    last_error = None
+
+    for model_name in active_models:
+        for attempt in range(MAX_RETRIES_PER_MODEL):
+            try:
+                parsed = _call_gemini(model_name, prompt, ReviewResult)
+                return {
+                    "status": parsed.get("status", "minor_edits"),
+                    "suggested_arabic": parsed.get("suggested_arabic", arabic),
+                    "reasoning": parsed.get("reasoning", "")
+                }
+            except Exception as e:
+                err_str = f"{type(e).__name__} - {str(e)}"
+                last_error = err_str
+                if any(kw in err_str.lower() for kw in ("notfound", "404", "no longer available", "not found")):
+                    break
+                if _is_retryable(err_str) and attempt < MAX_RETRIES_PER_MODEL - 1:
+                    _backoff_sleep(attempt)
+                    continue
+                break
+
+    return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": f"⚠️ API Error: {last_error}"}
+
+# --- DOCUMENT PARSERS & ANOMALY DETECTOR ---
+def extract_id(url: str):
+    match = re.search(r"/(?:d|folders)/([a-zA-Z0-9-_]+)", url)
+    if match: return match.group(1)
+    match_param = re.search(r"id=([a-zA-Z0-9-_]+)", url)
+    if match_param: return match_param.group(1)
+    if re.match(r"^[a-zA-Z0-9-_]+$", url.strip()): return url.strip()
+    return None
+
+def extract_text_from_pdf(file_bytes: bytes):
+    pdf_document = fitz.open(stream=file_bytes, filetype="pdf")
+    blocks = []
+    for page_num in range(len(pdf_document)):
+        page_text = pdf_document.load_page(page_num).get_text("text")
+        for line in page_text.split('\n'):
+            line_str = line.strip()
+            if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', line_str)):
+                blocks.append(line_str)
+    return blocks
+
+def extract_text_from_docx(file_bytes: bytes):
+    doc = docx.Document(io.BytesIO(file_bytes))
+    blocks = []
+    for p in doc.element.body.iter():
+        if p.tag.endswith('}p'):
+            text = "".join(node.text for node in p.iter() if node.tag.endswith('}t') and node.text)
+            clean_text = text.strip()
+            if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)):
+                if not blocks or blocks[-1] != clean_text:
+                    blocks.append(clean_text)
+    return blocks
+
+def _parse_docs_elements(elements):
+    paras = []
+    for elem in elements:
+        if 'paragraph' in elem:
+            para_text = ""
+            for run in elem.get('paragraph', {}).get('elements', []):
+                if 'textRun' in run:
+                    para_text += run.get('textRun', {}).get('content', '')
+            clean_text = para_text.strip()
+            if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)): 
+                paras.append(clean_text)
+        elif 'table' in elem:
+            for row in elem.get('table', {}).get('tableRows', []):
+                for cell in row.get('tableCells', []):
+                    paras.extend(_parse_docs_elements(cell.get('content', [])))
+    return paras
+
+def extract_text_from_drive(file_id: str, is_retry=False):
+    try:
+        docs_svc, drive_svc, _ = get_google_services()
+        file_meta = drive_svc.files().get(fileId=file_id, fields="mimeType").execute()
+        mime_type = file_meta.get("mimeType")
+
+        if mime_type == 'application/vnd.google-apps.document':
+            try:
+                document = docs_svc.documents().get(documentId=file_id, includeTabsContent=True).execute()
+            except Exception:
+                document = docs_svc.documents().get(documentId=file_id).execute()
+
+            all_paras = []
+            
+            def sweep_doc_obj(doc_obj):
+                temp_paras = []
+                temp_paras.extend(_parse_docs_elements(doc_obj.get('body', {}).get('content', [])))
+                for footer in doc_obj.get('footers', {}).values():
+                    temp_paras.extend(_parse_docs_elements(footer.get('content', [])))
+                for header in doc_obj.get('headers', {}).values():
+                    temp_paras.extend(_parse_docs_elements(header.get('content', [])))
+                for footnote in doc_obj.get('footnotes', {}).values():
+                    temp_paras.extend(_parse_docs_elements(footnote.get('content', [])))
+                return temp_paras
+
+            tabs = document.get('tabs', [])
+            if tabs:
+                for tab in tabs:
+                    all_paras.extend(sweep_doc_obj(tab.get('documentTab', {})))
+            else:
+                all_paras.extend(sweep_doc_obj(document))
+
+            return all_paras
+
+        elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+            request = drive_svc.files().get_media(fileId=file_id)
+            file_bytes = request.execute()
+            return extract_text_from_docx(file_bytes)
+        else:
+            st.error(f"Unsupported file type: {mime_type}")
+            return None
+    except Exception as e:
+        err_str = str(e)
+        if ("Broken pipe" in err_str or "Errno 32" in err_str) and not is_retry:
+            get_google_services.clear()
+            return extract_text_from_drive(file_id, is_retry=True)
+        st.error(f"Could not read document from Drive. Error: {e}")
+        return None
+
+def smart_align_with_anomaly_detection(paragraphs: list):
+    en_paras = []
+    ar_paras = []
+    
+    for p in paragraphs:
+        if bool(re.search(r'[\u0600-\u06FF]', p)):
+            ar_paras.append(p)
+        else:
+            en_paras.append(p)
+
+    aligned_segments = []
+    max_len = max(len(en_paras), len(ar_paras))
+    
+    anomaly_msg = None
+    if len(en_paras) != len(ar_paras):
+        anomaly_msg = f"Count Mismatch: Found {len(en_paras)} English blocks vs {len(ar_paras)} Arabic blocks. Alignment may be shifted."
+
+    for i in range(max_len):
+        en_text = en_paras[i] if i < len(en_paras) else "[MISSING ENGLISH SOURCE]"
+        ar_text = ar_paras[i] if i < len(ar_paras) else "[MISSING ARABIC TRANSLATION]"
+        
+        if en_text == "[MISSING ENGLISH SOURCE]":
+            status = 'misaligned_ar'
+        elif ar_text == "[MISSING ARABIC TRANSLATION]":
+            status = 'misaligned_en'
+        else:
+            status = 'normal'
+
+        aligned_segments.append({
+            'id': i + 1,
+            'status': status,
+            'english': en_text,
+            'arabic': ar_text,
+            'anomaly': anomaly_msg
+        })
+
+    return aligned_segments
+
+def prepend_google_doc_with_arabic(file_id: str, arabic_text: str):
+    """Prepends Arabic text, applies RTL styling, and pushes original content to a new page."""
+    try:
+        docs_svc, _, _ = get_google_services()
+        
+        text_to_insert = arabic_text + "\n"
+        len_text = len(text_to_insert)
+
+        requests = [
+            {
+                'insertText': {
+                    'location': {'index': 1},
+                    'text': text_to_insert
+                }
+            },
+            {
+                'updateParagraphStyle': {
+                    'range': {
+                        'startIndex': 1,
+                        'endIndex': 1 + len_text
+                    },
+                    'paragraphStyle': {
+                        'direction': 'RIGHT_TO_LEFT',
+                        'alignment': 'START'
+                    },
+                    'fields': 'direction,alignment'
+                }
+            },
+            {
+                'insertPageBreak': {
+                    'location': {'index': 1 + len_text}
+                }
+            }
+        ]
+
+        docs_svc.documents().batchUpdate(
+            documentId=file_id,
+            body={'requests': requests}
+        ).execute()
+        return True
+    except Exception as e:
+        st.error(f"Could not update Google Doc: {e}")
+        return False
+
+# --- MULTITHREADING RUNNERS ---
+def run_parallel_translations(paras, glossary_data, progress_bar):
+    processed = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(translate_with_ai, text, glossary_data): (i, text) for i, text in enumerate(paras)}
+        for count, future in enumerate(concurrent.futures.as_completed(futures), 1):
+            i, text = futures[future]
+            try:
+                res = future.result()
+            except Exception as e:
+                res = {"arabic_translation": "", "glossary_notes": f"Threading Error: {e}"}
+            processed.append({
+                "id": i + 1,
+                "english": text,
+                "arabic_translation":
