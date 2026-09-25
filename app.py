@@ -10,7 +10,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from pydantic import BaseModel, Field
 
-# --- NEW Google GenAI SDK (google-genai package) ---
+# --- Google GenAI SDK ---
 try:
     from google import genai
     from google.genai import types
@@ -26,7 +26,6 @@ st.set_page_config(page_title="12-Step Translation Reviewer", layout="wide")
 GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
 GLOSSARY_RANGE = "'المصطلحات'!C:D"
 
-# --- Retry policy for transient errors ---
 MAX_RETRIES_PER_MODEL = 3
 BASE_BACKOFF_SECONDS = 2.0
 MAX_BACKOFF_SECONDS = 15.0
@@ -78,28 +77,16 @@ def get_google_services():
 
 docs_service, drive_service, sheets_service = get_google_services()
 
-# --- GEMINI SETUP ---
-FALLBACK_MODELS = [
-    "gemini-3.8-flash",  # The exact model Google requested
-    "gemini-3.6-flash",  # Secondary modern fallback
-    "gemini-3.5-flash",
-]
-
-class ReviewResult(BaseModel):
-    status: str = Field(description="Must be 'perfect', 'minor_edits', or 'major_rewrite'")
-    suggested_arabic: str = Field(description="The finalized Arabic text")
-    reasoning: str = Field(description="Brief explanation of changes")
-
 @st.cache_resource
 def get_genai_client():
     if not GENAI_AVAILABLE:
         return None
-    # Initialize the new SDK client
     return genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 
 client = get_genai_client()
 
-# Define safety settings using the new SDK's enums
+# Permissive safety settings for clinical recovery texts
+safety_settings = []
 if GENAI_AVAILABLE:
     safety_settings = [
         types.SafetySetting(
@@ -120,6 +107,46 @@ if GENAI_AVAILABLE:
         ),
     ]
 
+class ReviewResult(BaseModel):
+    status: str = Field(description="Must be 'perfect', 'minor_edits', or 'major_rewrite'")
+    suggested_arabic: str = Field(description="The finalized Arabic text")
+    reasoning: str = Field(description="Brief explanation of changes")
+
+@st.cache_resource(ttl=3600)
+def get_fallback_models():
+    """
+    Combines external secrets control with dynamic discovery to eliminate
+    obsolescence errors when models are retired by Google.
+    """
+    # 1. Check if an explicit model override was defined in Streamlit Secrets
+    secret_model = st.secrets.get("ACTIVE_MODEL", "").strip()
+    if secret_model:
+        return [secret_model]
+
+    # 2. Dynamic live auto-discovery from the active API client
+    if GENAI_AVAILABLE and client is not None:
+        try:
+            available_flash_models = []
+            for m in client.models.list():
+                clean_name = m.name.replace("models/", "")
+                # Select operational flash-tier models
+                if "flash" in clean_name.lower() and not any(tag in clean_name.lower() for tag in ["legacy", "embed", "imagen"]):
+                    available_flash_models.append(clean_name)
+            
+            # Sort reverse naturally to position the newest version at index 0
+            available_flash_models.sort(reverse=True)
+            if available_flash_models:
+                return available_flash_models
+        except Exception:
+            pass
+
+    # 3. Static fallback sequence if model listing fails
+    return [
+        "gemini-3.8-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+    ]
+
 # ==========================================
 # 3. HELPER FUNCTIONS
 # ==========================================
@@ -136,10 +163,10 @@ def fetch_glossary():
                 glossary_string += f"- {row[0]} -> {row[1]}\n"
         return glossary_string
     except Exception as e:
-        st.warning(f"Could not fetch glossary. Please check the ID, Tab Name, and sharing permissions. Error: {e}")
+        st.warning(f"Could not fetch glossary. Error: {e}")
         return ""
 
-def _build_prompt(english, arabic, glossary_text):
+def _build_prompt(english: str, arabic: str, glossary_text: str) -> str:
     return f"""
 You are an expert translator specializing in 12-step recovery literature.
 Your tone must be clinical, professional, and non-moralizing.
@@ -161,7 +188,6 @@ def _backoff_sleep(attempt: int):
     time.sleep(delay)
 
 def _call_gemini(model_name: str, prompt: str):
-    """Uses the standard generate_content endpoint with structured output."""
     response = client.models.generate_content(
         model=model_name,
         contents=prompt,
@@ -169,18 +195,20 @@ def _call_gemini(model_name: str, prompt: str):
             response_mime_type="application/json",
             response_schema=ReviewResult,
             safety_settings=safety_settings,
-            temperature=0.1, # Keep output deterministic
+            temperature=0.1,
         ),
     )
-    
-    # Check if blocked by safety settings
     if not response.text:
         feedback = getattr(response, 'prompt_feedback', 'Safety blocked')
-        raise ValueError(f"Blocked by safety filter: {feedback}")
-        
-    return json.loads(response.text)
+        raise ValueError(f"Empty output from model: {feedback}")
 
-def review_with_ai(english, arabic, glossary_text):
+    clean_text = response.text.replace("```json", "").replace("```", "").strip()
+    match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+    if match:
+        clean_text = match.group(0)
+    return json.loads(clean_text)
+
+def review_with_ai(english: str, arabic: str, glossary_text: str):
     if not GENAI_AVAILABLE or client is None:
         return {"status": "major_rewrite", "suggested_arabic": arabic,
                 "reasoning": "google-genai SDK not available. Add 'google-genai' to requirements.txt."}
@@ -190,38 +218,40 @@ def review_with_ai(english, arabic, glossary_text):
                 "reasoning": "Alignment mismatch detected. Manual input required."}
 
     prompt = _build_prompt(english, arabic, glossary_text)
-
+    active_models = get_fallback_models()
     last_error = None
-    for model_name in FALLBACK_MODELS:
+
+    for model_name in active_models:
         for attempt in range(MAX_RETRIES_PER_MODEL):
             try:
                 parsed = _call_gemini(model_name, prompt)
                 return {
                     "status": parsed.get("status", "minor_edits"),
                     "suggested_arabic": parsed.get("suggested_arabic", arabic),
-                    "reasoning": parsed.get("reasoning", "Reviewed successfully.")
+                    "reasoning": f"Reviewed using {model_name}"
                 }
-
             except Exception as e:
                 err_str = f"{type(e).__name__} - {str(e)}"
                 last_error = err_str
 
+                # If model is retired, missing, or deprecated, immediately abandon it and test next model
                 if any(kw in err_str.lower() for kw in ("notfound", "404", "no longer available", "not found", "not supported")):
-                    break # Break out of the retry loop for this model
+                    break
 
+                # If transient congestion/rate limit, apply backoff
                 if _is_retryable(err_str) and attempt < MAX_RETRIES_PER_MODEL - 1:
                     _backoff_sleep(attempt)
                     continue
 
-                break # Non-retryable error, try next model
+                break
 
     return {
         "status": "major_rewrite",
         "suggested_arabic": arabic,
-        "reasoning": f"⚠️ Gemini failed across all fallback models. Last error: {last_error}",
+        "reasoning": f"⚠️ All model attempts failed. Last error: {last_error}",
     }
 
-def extract_id(url):
+def extract_id(url: str):
     match = re.search(r"/(?:d|folders)/([a-zA-Z0-9-_]+)", url)
     if match: return match.group(1)
     match_param = re.search(r"id=([a-zA-Z0-9-_]+)", url)
@@ -229,18 +259,18 @@ def extract_id(url):
     if re.match(r"^[a-zA-Z0-9-_]+$", url.strip()): return url.strip()
     return None
 
-def extract_text_from_pdf(file_bytes):
+def extract_text_from_pdf(file_bytes: bytes):
     pdf_document = fitz.open(stream=file_bytes, filetype="pdf")
     full_text = ""
     for page_num in range(len(pdf_document)):
         full_text += pdf_document.load_page(page_num).get_text("text") + "\n"
     return [p.replace('\n', ' ').strip() for p in full_text.split('\n\n') if p.replace('\n', ' ').strip()]
 
-def extract_text_from_docx(file_bytes):
+def extract_text_from_docx(file_bytes: bytes):
     doc = docx.Document(io.BytesIO(file_bytes))
     return [p.text.strip() for p in doc.paragraphs if p.text.strip()]
 
-def extract_text_from_drive(file_id):
+def extract_text_from_drive(file_id: str):
     try:
         file_meta = drive_service.files().get(fileId=file_id, fields="mimeType").execute()
         mime_type = file_meta.get("mimeType")
@@ -263,13 +293,13 @@ def extract_text_from_drive(file_id):
             file_bytes = request.execute()
             return extract_text_from_docx(file_bytes)
         else:
-            st.error(f"Unsupported file type. Found: {mime_type}")
+            st.error(f"Unsupported file type: {mime_type}")
             return None
     except Exception as e:
         st.error(f"Could not read document from Drive. Ensure the bot is an Editor. Error: {e}")
         return None
 
-def smart_align_mixed_text(paragraphs):
+def smart_align_mixed_text(paragraphs: list):
     pairs = []
     current_en = []
     current_ar = []
@@ -292,7 +322,7 @@ def smart_align_mixed_text(paragraphs):
         pairs.append({"english": "\n".join(current_en), "arabic": "\n".join(current_ar)})
     return pairs
 
-def smart_align_separate_files(en_paras, ar_paras):
+def smart_align_separate_files(en_paras: list, ar_paras: list):
     pairs = []
     max_len = max(len(en_paras), len(ar_paras))
     for i in range(max_len):
@@ -307,10 +337,12 @@ def smart_align_separate_files(en_paras, ar_paras):
 st.title("Arabic Translation Reviewer - 12-Step Literature")
 
 if not GENAI_AVAILABLE:
-    st.error("🚨 Critical Dependency Missing: The `google-genai` package is not installed. Please update your `requirements.txt`.")
+    st.error("🚨 Critical Dependency Missing: The `google-genai` package is not installed. Please add it to `requirements.txt`.")
     st.stop()
 
 glossary_data = fetch_glossary()
+active_models_list = get_fallback_models()
+st.caption(f"Active AI Routing Models: `{', '.join(active_models_list)}`")
 
 if "No glossary connected" not in glossary_data and glossary_data != "":
     st.success(f"✅ Glossary connected successfully from tab: {GLOSSARY_RANGE.split('!')[0]}")
@@ -337,8 +369,7 @@ with tab1:
 
             if paras:
                 smart_pairs = smart_align_mixed_text(paras)
-
-                st.info(f"File read successfully! Smart detection found {len(smart_pairs)} translation pairs. Sending to AI...")
+                st.info(f"File read successfully! Smart detection grouped text into {len(smart_pairs)} translation segments. Processing with AI...")
                 progress_bar = st.progress(0)
                 processed_results = []
                 total = len(smart_pairs)
@@ -373,11 +404,10 @@ with tab2:
         ar_paras = extract_text_from_pdf(file_ar.read()) if file_ar.name.endswith('.pdf') else extract_text_from_docx(file_ar.read())
 
         smart_pairs = smart_align_separate_files(en_paras, ar_paras)
-
         if len(en_paras) != len(ar_paras):
             st.warning(f"⚠️ Alignment Mismatch Detected: {len(en_paras)} English blocks vs {len(ar_paras)} Arabic blocks. Proceeding with missing tags...")
         else:
-            st.info("Files aligned! Sending to AI for review. This may take a moment...")
+            st.info("Files aligned! Sending to AI for review...")
 
         progress_bar = st.progress(0)
         processed_results = []
@@ -400,11 +430,11 @@ with tab2:
         st.rerun()
 
 # ==========================================
-# 5. THE REVIEW GRID & EXPORT
+# 5. REVIEW INTERFACE & EXPORT BLOCKS
 # ==========================================
 if st.session_state['processed_data']:
     st.divider()
-    st.subheader("Review Pending Edits")
+    st.subheader("Review Segments")
 
     approved_count = 0
     finalized_arabic_list = []
@@ -436,9 +466,8 @@ if st.session_state['processed_data']:
     st.write(f"**Approved Changes: {approved_count} / {total_segments}**")
 
     if approved_count == total_segments:
-        st.success("🎉 All segments approved! You can now copy the finalized text below.")
-
-        st.subheader("📄 Finalized Translations")
+        st.success("🎉 All segments approved! Copy the finalized blocks below directly into your master document.")
+        st.subheader("📄 Finalized Text Blocks")
 
         final_arabic_text = "\n\n".join(finalized_arabic_list)
         final_english_text = "\n\n".join(finalized_english_list)
@@ -449,4 +478,4 @@ if st.session_state['processed_data']:
         with col_final_en:
             st.text_area("Final English Text (Select All and Copy)", value=final_english_text, height=400)
     else:
-        st.caption("You must approve all segments above to reveal the final compiled text.")
+        st.caption("You must check 'Approve this segment' on all segments above to compile the final text.")
