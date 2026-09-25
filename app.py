@@ -63,6 +63,9 @@ if "input_method" not in st.session_state:
 if 'processed_data' not in st.session_state:
     st.session_state['processed_data'] = None
 
+if 'current_file_id' not in st.session_state:
+    st.session_state['current_file_id'] = None
+
 # ==========================================
 # 2. INITIALIZE GOOGLE & AI SERVICES
 # ==========================================
@@ -314,7 +317,6 @@ def extract_text_from_docx(file_bytes: bytes):
     doc = docx.Document(io.BytesIO(file_bytes))
     blocks = []
     
-    # XML Deep Sweep: Hunts down every text node across standard paragraphs, tables, floating text boxes, and nested shapes
     for p in doc.element.body.iter():
         if p.tag.endswith('}p'):
             text = "".join(node.text for node in p.iter() if node.tag.endswith('}t') and node.text)
@@ -429,6 +431,50 @@ def smart_align_with_anomaly_detection(paragraphs: list):
 
     return aligned_segments
 
+def prepend_google_doc_with_arabic(file_id: str, arabic_text: str):
+    """Prepends Arabic text, applies RTL styling, and pushes original content to a new page."""
+    try:
+        docs_svc, _, _ = get_google_services()
+        
+        text_to_insert = arabic_text + "\n"
+        len_text = len(text_to_insert)
+
+        requests = [
+            {
+                'insertText': {
+                    'location': {'index': 1},
+                    'text': text_to_insert
+                }
+            },
+            {
+                'updateParagraphStyle': {
+                    'range': {
+                        'startIndex': 1,
+                        'endIndex': 1 + len_text
+                    },
+                    'paragraphStyle': {
+                        'direction': 'RIGHT_TO_LEFT',
+                        'alignment': 'START'
+                    },
+                    'fields': 'direction,alignment'
+                }
+            },
+            {
+                'insertPageBreak': {
+                    'location': {'index': 1 + len_text}
+                }
+            }
+        ]
+
+        docs_svc.documents().batchUpdate(
+            documentId=file_id,
+            body={'requests': requests}
+        ).execute()
+        return True
+    except Exception as e:
+        st.error(f"Could not update Google Doc: {e}")
+        return False
+
 # ==========================================
 # 4. DASHBOARD UI & PUSH BUTTON ROUTING
 # ==========================================
@@ -446,7 +492,6 @@ with st.container(border=True):
     col_main, col_info = st.columns([2, 1])
     
     with col_main:
-        # --- ROW 1: MODE SELECTOR ---
         st.markdown("### 🎛️ 1. Select Operating Mode")
         col_m1, col_m2 = st.columns(2)
         
@@ -455,6 +500,7 @@ with st.container(border=True):
                 if st.session_state["app_mode"] != "Translator Mode":
                     st.session_state["app_mode"] = "Translator Mode"
                     st.session_state['processed_data'] = None
+                    st.session_state['current_file_id'] = None
                     st.rerun()
                     
         with col_m2:
@@ -462,9 +508,9 @@ with st.container(border=True):
                 if st.session_state["app_mode"] != "Reviewer Mode":
                     st.session_state["app_mode"] = "Reviewer Mode"
                     st.session_state['processed_data'] = None
+                    st.session_state['current_file_id'] = None
                     st.rerun()
         
-        # --- ROW 2: METHOD SELECTOR ---
         st.markdown("### 📥 2. Select Input Method")
         col_meth1, col_meth2 = st.columns(2)
         
@@ -473,6 +519,7 @@ with st.container(border=True):
                 if st.session_state["input_method"] != "drive":
                     st.session_state["input_method"] = "drive"
                     st.session_state['processed_data'] = None
+                    st.session_state['current_file_id'] = None
                     st.rerun()
                     
         with col_meth2:
@@ -480,6 +527,7 @@ with st.container(border=True):
                 if st.session_state["input_method"] != "upload":
                     st.session_state["input_method"] = "upload"
                     st.session_state['processed_data'] = None
+                    st.session_state['current_file_id'] = None
                     st.rerun()
 
     with col_info:
@@ -501,7 +549,6 @@ st.divider()
 # ==========================================
 # FILE INGESTION LOGIC
 # ==========================================
-
 if st.session_state["input_method"] == "drive":
     if st.session_state["app_mode"] == "Translator Mode":
         st.write("Paste a Google Doc or Word URL containing **English text** to translate.")
@@ -516,6 +563,7 @@ if st.session_state["input_method"] == "drive":
             st.error("Invalid Google Drive URL.")
         else:
             st.info(f"Connecting to Document ID: {file_id}...")
+            st.session_state['current_file_id'] = file_id 
             paras = extract_text_from_drive(file_id)
 
             if paras:
@@ -788,7 +836,7 @@ if st.session_state['processed_data']:
     st.write(f"### **Approved Segments: {approved_count} / {total_segments}**")
 
     if approved_count == total_segments:
-        st.success("🎉 All segments approved! Copy the finalized text blocks below directly into your master document.")
+        st.success("🎉 All segments approved! Copy the text blocks below, or push them directly to Google Drive.")
         st.subheader("📄 Finalized Text Blocks")
 
         final_arabic_text = "\n\n".join(finalized_arabic_list)
@@ -799,5 +847,21 @@ if st.session_state['processed_data']:
             st.text_area("Final Arabic Text (Select All and Copy)", value=final_arabic_text, height=400)
         with col_final_en:
             st.text_area("Final English Text (Select All and Copy)", value=final_english_text, height=400)
+
+        # --- GOOGLE DRIVE PUSH INTEGRATION ---
+        if st.session_state["input_method"] == "drive" and st.session_state.get('current_file_id'):
+            st.divider()
+            st.markdown("### ☁️ Sync to Google Drive")
+            st.info("✨ **Action:** This will insert the finalized Arabic translation at the very top of your Google Doc, set the text direction to Right-To-Left (RTL), and insert a Page Break so your original formatted document is safely preserved on the pages below.")
+            
+            if st.button("🚀 Push Arabic to Top of Document", type="primary", use_container_width=True):
+                with st.spinner("Pushing updates to Google Drive..."):
+                    success = prepend_google_doc_with_arabic(
+                        st.session_state['current_file_id'], 
+                        final_arabic_text
+                    )
+                    if success:
+                        st.success("✅ Document successfully updated in Google Drive!")
+                        st.balloons()
     else:
         st.caption("You must check 'Approve this segment' on all segments above to compile the final text.")
