@@ -56,6 +56,9 @@ if not check_password():
 # --- STATE MANAGEMENT ---
 if "app_mode" not in st.session_state:
     st.session_state["app_mode"] = "Reviewer Mode"
+    
+if "input_method" not in st.session_state:
+    st.session_state["input_method"] = "drive"
 
 if 'processed_data' not in st.session_state:
     st.session_state['processed_data'] = None
@@ -353,7 +356,6 @@ def extract_text_from_drive(file_id: str, is_retry=False):
 
             all_paras = []
             
-            # Extract standard body + headers/footers/footnotes
             def sweep_doc_obj(doc_obj):
                 temp_paras = []
                 temp_paras.extend(_parse_docs_elements(doc_obj.get('body', {}).get('content', [])))
@@ -428,7 +430,7 @@ def smart_align_with_anomaly_detection(paragraphs: list):
     return aligned_segments
 
 # ==========================================
-# 4. DASHBOARD UI & ROUTING
+# 4. DASHBOARD UI & PUSH BUTTON ROUTING
 # ==========================================
 st.title("⚙️ 12-Step AI Suite")
 
@@ -439,54 +441,72 @@ if not GENAI_AVAILABLE:
 glossary_data = fetch_glossary()
 active_models_list = get_fallback_models()
 
-# --- MASTER CONTROL PANEL (UPGRADED UI) ---
+# --- MASTER CONTROL PANEL (PUSH BUTTONS) ---
 with st.container(border=True):
-    col_mode, col_info = st.columns([1.5, 1])
+    col_main, col_info = st.columns([2, 1])
     
-    with col_mode:
-        st.markdown("### 🎛️ Select Operating Mode")
+    with col_main:
+        # --- ROW 1: MODE SELECTOR ---
+        st.markdown("### 🎛️ 1. Select Operating Mode")
+        col_m1, col_m2 = st.columns(2)
         
-        mode_options = ["🌍 Translator Mode", "📝 Reviewer Mode"]
-        current_index = 0 if st.session_state["app_mode"] == "Translator Mode" else 1
+        with col_m1:
+            if st.button("🌍 Translator Mode", use_container_width=True, type="primary" if st.session_state["app_mode"] == "Translator Mode" else "secondary"):
+                if st.session_state["app_mode"] != "Translator Mode":
+                    st.session_state["app_mode"] = "Translator Mode"
+                    st.session_state['processed_data'] = None
+                    st.rerun()
+                    
+        with col_m2:
+            if st.button("📝 Reviewer Mode", use_container_width=True, type="primary" if st.session_state["app_mode"] == "Reviewer Mode" else "secondary"):
+                if st.session_state["app_mode"] != "Reviewer Mode":
+                    st.session_state["app_mode"] = "Reviewer Mode"
+                    st.session_state['processed_data'] = None
+                    st.rerun()
         
-        selected_ui_mode = st.radio(
-            "Mode Selector", 
-            mode_options, 
-            index=current_index,
-            horizontal=True,
-            label_visibility="collapsed"
-        )
+        # --- ROW 2: METHOD SELECTOR ---
+        st.markdown("### 📥 2. Select Input Method")
+        col_meth1, col_meth2 = st.columns(2)
         
-        selected_mode = selected_ui_mode.replace("🌍 ", "").replace("📝 ", "")
-        
-        if selected_mode != st.session_state["app_mode"]:
-            st.session_state["app_mode"] = selected_mode
-            st.session_state['processed_data'] = None
-            st.rerun()
-            
-        if selected_mode == "Translator Mode":
-            st.caption("✨ **Action:** Upload English only. AI will generate a brand new Arabic translation using the glossary.")
-        else:
-            st.caption("✨ **Action:** Upload both languages. AI will compare, generate visual diffs, and suggest editorial improvements.")
+        with col_meth1:
+            if st.button("☁️ Method 1: Google Drive", use_container_width=True, type="primary" if st.session_state["input_method"] == "drive" else "secondary"):
+                if st.session_state["input_method"] != "drive":
+                    st.session_state["input_method"] = "drive"
+                    st.session_state['processed_data'] = None
+                    st.rerun()
+                    
+        with col_meth2:
+            if st.button("📁 Method 2: File Upload", use_container_width=True, type="primary" if st.session_state["input_method"] == "upload" else "secondary"):
+                if st.session_state["input_method"] != "upload":
+                    st.session_state["input_method"] = "upload"
+                    st.session_state['processed_data'] = None
+                    st.rerun()
 
     with col_info:
-        st.markdown("**System Status:**")
+        st.markdown("### 📊 System Status")
         st.caption(f"🤖 **Models:** `{', '.join(active_models_list)}`")
+        
         if "No glossary connected" not in glossary_data and glossary_data != "":
-            st.success(f"✅ **Glossary Connected:** `{GLOSSARY_RANGE.split('!')[0]}`")
+            st.success(f"✅ **Glossary Connected:**\n`{GLOSSARY_RANGE.split('!')[0]}`")
         else:
             st.warning("⚠️ Glossary not active. Check Spreadsheet ID.")
+            
+        if st.session_state["app_mode"] == "Translator Mode":
+            st.info("✨ **Translator Mode Active:** AI generates new translations from an English source document.")
+        else:
+            st.info("✨ **Reviewer Mode Active:** AI compares and corrects existing Arabic translations.")
 
 st.divider()
 
-tab1, tab2 = st.tabs(["Method 1: Google Drive Link", "Method 2: Direct File Upload"])
+# ==========================================
+# FILE INGESTION LOGIC
+# ==========================================
 
-# --- TAB 1: GOOGLE DRIVE ---
-with tab1:
+if st.session_state["input_method"] == "drive":
     if st.session_state["app_mode"] == "Translator Mode":
-        st.write("Paste a Google Doc or Word URL containing English text to translate.")
+        st.write("Paste a Google Doc or Word URL containing **English text** to translate.")
     else:
-        st.write("Paste a Google Doc or Word URL containing English & Arabic text to review.")
+        st.write("Paste a Google Doc or Word URL containing **English & Arabic text** to review.")
         
     doc_url = st.text_input("Paste Google Drive File URL Here:")
 
@@ -558,10 +578,9 @@ with tab1:
                 st.session_state['processed_data'] = processed_results
                 st.rerun()
 
-# --- TAB 2: FILE UPLOAD ---
-with tab2:
+elif st.session_state["input_method"] == "upload":
     if st.session_state["app_mode"] == "Translator Mode":
-        st.write("Upload an English Word document or PDF to translate.")
+        st.write("Upload an **English** Word document or PDF to translate.")
         file_en = st.file_uploader("Upload English Source File", type=["docx", "pdf"])
         
         if st.button("Process & Translate File") and file_en:
