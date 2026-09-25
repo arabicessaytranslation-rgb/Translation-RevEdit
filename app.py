@@ -8,7 +8,7 @@ import docx
 import fitz  # PyMuPDF
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # --- NEW Google GenAI SDK (google-genai package) ---
 try:
@@ -26,14 +26,14 @@ st.set_page_config(page_title="12-Step Translation Reviewer", layout="wide")
 GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
 GLOSSARY_RANGE = "'المصطلحات'!C:D"
 
-# --- Retry policy for transient errors (503 / high demand) ---
-MAX_RETRIES_PER_MODEL = 3          # attempts per model before moving to next fallback
-BASE_BACKOFF_SECONDS = 2.0         # initial wait; doubles each retry
-MAX_BACKOFF_SECONDS = 15.0         # cap on wait time
+# --- Retry policy for transient errors ---
+MAX_RETRIES_PER_MODEL = 3
+BASE_BACKOFF_SECONDS = 2.0
+MAX_BACKOFF_SECONDS = 15.0
 RETRYABLE_KEYWORDS = (
-    "503", "ServiceUnavailable", "service_unavailable",
+    "503", "500", "ServiceUnavailable", "service_unavailable",
     "high demand", "UNAVAILABLE", "429", "ResourceExhausted",
-    "DeadlineExceeded", "timeout",
+    "DeadlineExceeded", "timeout", "Quota",
 )
 
 def check_password():
@@ -78,35 +78,47 @@ def get_google_services():
 
 docs_service, drive_service, sheets_service = get_google_services()
 
-# --- GEMINI SETUP (NEW google-genai SDK) ---
-MODEL_NAME = "gemini-3.6-flash"
-
-# Fallback chain — if the primary is overloaded, try these in order.
-# 3.x-flash-lite / 2.5-flash-lite tiers tend to have more headroom.
+# --- GEMINI SETUP ---
 FALLBACK_MODELS = [
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.0-flash",
-    "gemini-3.6-flash-lite",
-    "gemini-2.5-flash",
+    "gemini-2.5-flash",  # Current standard for text tasks
+    "gemini-1.5-flash",  # Fallback
+    "gemini-2.0-flash",
 ]
 
 class ReviewResult(BaseModel):
-    status: str
-    suggested_arabic: str
-    reasoning: str
+    status: str = Field(description="Must be 'perfect', 'minor_edits', or 'major_rewrite'")
+    suggested_arabic: str = Field(description="The finalized Arabic text")
+    reasoning: str = Field(description="Brief explanation of changes")
 
 @st.cache_resource
 def get_genai_client():
     if not GENAI_AVAILABLE:
-        st.error(
-            "❌ The `google-genai` package is not installed. "
-            "Add `google-genai` to your requirements.txt and redeploy."
-        )
         return None
+    # Initialize the new SDK client
     return genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 
 client = get_genai_client()
+
+# Define safety settings using the new SDK's enums
+if GENAI_AVAILABLE:
+    safety_settings = [
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+        ),
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+        ),
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+        ),
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+        ),
+    ]
 
 # ==========================================
 # 3. HELPER FUNCTIONS
@@ -138,39 +150,35 @@ You MUST adhere to this glossary for specific terms:
 Review this translation pair:
 English: "{english}"
 Arabic: "{arabic}"
-
-Respond with the requested JSON object.
-Note: "status" must be one of: "perfect", "minor_edits", or "major_rewrite".
 """
 
 def _is_retryable(err_str: str) -> bool:
     return any(kw.lower() in err_str.lower() for kw in RETRYABLE_KEYWORDS)
 
 def _backoff_sleep(attempt: int):
-    """Exponential backoff with jitter, capped at MAX_BACKOFF_SECONDS."""
     delay = min(BASE_BACKOFF_SECONDS * (2 ** attempt), MAX_BACKOFF_SECONDS)
-    delay += random.uniform(0, 1.0)  # jitter to avoid thundering-herd
+    delay += random.uniform(0, 1.0)
     time.sleep(delay)
 
 def _call_gemini(model_name: str, prompt: str):
-    """One round-trip to the Interactions API, returning the parsed dict or raising."""
-    interaction = client.interactions.create(
+    """Uses the standard generate_content endpoint with structured output."""
+    response = client.models.generate_content(
         model=model_name,
-        input=prompt,
-        response_format=[
-            {
-                "type": "text",
-                "mime_type": "application/json",
-                "schema": ReviewResult.model_json_schema(),
-            }
-        ],
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=ReviewResult,
+            safety_settings=safety_settings,
+            temperature=0.1, # Keep output deterministic
+        ),
     )
-    raw_text = interaction.output_text
-    clean_text = raw_text.replace("```json", "").replace("```", "").strip()
-    match = re.search(r'\{.*\}', clean_text, re.DOTALL)
-    if match:
-        clean_text = match.group(0)
-    return json.loads(clean_text)
+    
+    # Check if blocked by safety settings
+    if not response.text:
+        feedback = getattr(response, 'prompt_feedback', 'Safety blocked')
+        raise ValueError(f"Blocked by safety filter: {feedback}")
+        
+    return json.loads(response.text)
 
 def review_with_ai(english, arabic, glossary_text):
     if not GENAI_AVAILABLE or client is None:
@@ -198,27 +206,19 @@ def review_with_ai(english, arabic, glossary_text):
                 err_str = f"{type(e).__name__} - {str(e)}"
                 last_error = err_str
 
-                # 404 / model-unavailable → skip retries on this model, go straight to next
-                if any(kw in err_str for kw in
-                       ("NotFound", "404", "no longer available", "not found", "not supported")):
-                    break
+                if any(kw in err_str.lower() for kw in ("notfound", "404", "no longer available", "not found", "not supported")):
+                    break # Break out of the retry loop for this model
 
-                # Transient overload → retry with backoff on the same model
                 if _is_retryable(err_str) and attempt < MAX_RETRIES_PER_MODEL - 1:
                     _backoff_sleep(attempt)
                     continue
 
-                # Non-retryable, or retries exhausted → try next fallback model
-                break
+                break # Non-retryable error, try next model
 
-    # All models + retries exhausted
     return {
         "status": "major_rewrite",
         "suggested_arabic": arabic,
-        "reasoning": (
-            f"⚠️ Gemini was overloaded across all fallback models after retries. "
-            f"Please re-run this segment in a moment. Last error: {last_error}"
-        ),
+        "reasoning": f"⚠️ Gemini failed across all fallback models. Last error: {last_error}",
     }
 
 def extract_id(url):
@@ -305,6 +305,11 @@ def smart_align_separate_files(en_paras, ar_paras):
 # 4. DASHBOARD UI & ROUTING
 # ==========================================
 st.title("Arabic Translation Reviewer - 12-Step Literature")
+
+if not GENAI_AVAILABLE:
+    st.error("🚨 Critical Dependency Missing: The `google-genai` package is not installed. Please update your `requirements.txt`.")
+    st.stop()
+
 glossary_data = fetch_glossary()
 
 if "No glossary connected" not in glossary_data and glossary_data != "":
