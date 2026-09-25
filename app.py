@@ -313,7 +313,7 @@ def extract_text_from_pdf(file_bytes: bytes):
             blocks.append(clean_text)
     return blocks
 
-defdef extract_text_from_docx(file_bytes: bytes):
+def extract_text_from_docx(file_bytes: bytes):
     doc = docx.Document(io.BytesIO(file_bytes))
     blocks = []
     
