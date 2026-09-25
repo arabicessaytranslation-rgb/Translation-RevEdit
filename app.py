@@ -102,7 +102,6 @@ if GENAI_AVAILABLE:
         types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
     ]
 
-# --- AI DATA SCHEMAS ---
 class TranslationResult(BaseModel):
     arabic_translation: str = Field(description="The finalized Arabic translation")
     glossary_notes: str = Field(description="Explanation of specific terms used based on context")
@@ -288,7 +287,7 @@ If the translation captures meaning and tone accurately, leave it as is. If it m
 
     return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": f"⚠️ API Error: {last_error}"}
 
-# --- DOCUMENT PARSERS ---
+# --- DOCUMENT PARSERS & ANOMALY DETECTOR ---
 def extract_id(url: str):
     match = re.search(r"/(?:d|folders)/([a-zA-Z0-9-_]+)", url)
     if match: return match.group(1)
@@ -302,59 +301,28 @@ def extract_text_from_pdf(file_bytes: bytes):
     blocks = []
     for page_num in range(len(pdf_document)):
         page_text = pdf_document.load_page(page_num).get_text("text")
-        # Split by multiple newlines or clean lines
-        lines = page_text.split('\n')
-        curr_block = []
-        for line in lines:
+        for line in page_text.split('\n'):
             line_str = line.strip()
-            if line_str:
-                curr_block.append(line_str)
-            else:
-                if curr_block:
-                    joined = " ".join(curr_block)
-                    if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', joined)):
-                        blocks.append(joined)
-                    curr_block = []
-        if curr_block:
-            joined = " ".join(curr_block)
-            if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', joined)):
-                blocks.append(joined)
+            if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', line_str)):
+                blocks.append(line_str)
     return blocks
 
 def extract_text_from_docx(file_bytes: bytes):
     doc = docx.Document(io.BytesIO(file_bytes))
     blocks = []
     
-    # Body paragraphs
-    for p in doc.paragraphs:
-        clean_text = p.text.strip()
-        if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)): 
-            blocks.append(clean_text)
-            
-    # Tables
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    clean_text = p.text.strip()
-                    if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)):
-                        if not blocks or blocks[-1] != clean_text:
-                            blocks.append(clean_text)
-
-    # Floating Text Boxes / Shapes
-    try:
-        for txbx in doc.element.xpath('//w:txbxContent//w:p'):
-            para_text = "".join(node.text for node in txbx.xpath('.//w:t') if node.text).strip()
-            if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', para_text)):
-                if not blocks or blocks[-1] != para_text:
-                    blocks.append(para_text)
-    except Exception:
-        pass
-
+    # XML Deep Sweep: Hunts down every text node across standard paragraphs, tables, floating text boxes, and nested shapes
+    for p in doc.element.body.iter():
+        if p.tag.endswith('}p'):
+            text = "".join(node.text for node in p.iter() if node.tag.endswith('}t') and node.text)
+            clean_text = text.strip()
+            if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)):
+                if not blocks or blocks[-1] != clean_text:
+                    blocks.append(clean_text)
+                    
     return blocks
 
 def _parse_docs_elements(elements):
-    """Deep recursive extraction for Google Docs body, tables, and nested structures."""
     paras = []
     for elem in elements:
         if 'paragraph' in elem:
@@ -378,23 +346,31 @@ def extract_text_from_drive(file_id: str, is_retry=False):
         mime_type = file_meta.get("mimeType")
 
         if mime_type == 'application/vnd.google-apps.document':
-            # includeTabsContent=True ensures all document tabs are retrieved
             try:
                 document = docs_svc.documents().get(documentId=file_id, includeTabsContent=True).execute()
             except Exception:
                 document = docs_svc.documents().get(documentId=file_id).execute()
 
             all_paras = []
-            # 1. Check for modern Google Docs Tabs
+            
+            # Extract standard body + headers/footers/footnotes
+            def sweep_doc_obj(doc_obj):
+                temp_paras = []
+                temp_paras.extend(_parse_docs_elements(doc_obj.get('body', {}).get('content', [])))
+                for footer in doc_obj.get('footers', {}).values():
+                    temp_paras.extend(_parse_docs_elements(footer.get('content', [])))
+                for header in doc_obj.get('headers', {}).values():
+                    temp_paras.extend(_parse_docs_elements(header.get('content', [])))
+                for footnote in doc_obj.get('footnotes', {}).values():
+                    temp_paras.extend(_parse_docs_elements(footnote.get('content', [])))
+                return temp_paras
+
             tabs = document.get('tabs', [])
             if tabs:
                 for tab in tabs:
-                    doc_tab = tab.get('documentTab', {})
-                    all_paras.extend(_parse_docs_elements(doc_tab.get('body', {}).get('content', [])))
-            
-            # 2. Extract standard root body
-            if not all_paras:
-                all_paras = _parse_docs_elements(document.get('body', {}).get('content', []))
+                    all_paras.extend(sweep_doc_obj(tab.get('documentTab', {})))
+            else:
+                all_paras.extend(sweep_doc_obj(document))
 
             return all_paras
 
@@ -414,10 +390,6 @@ def extract_text_from_drive(file_id: str, is_retry=False):
         return None
 
 def smart_align_with_anomaly_detection(paragraphs: list):
-    """
-    Bucket alignment logic: Separates all English and Arabic blocks sequentially,
-    pairing them 1-to-1 regardless of chunked or alternating document layouts.
-    """
     en_paras = []
     ar_paras = []
     
