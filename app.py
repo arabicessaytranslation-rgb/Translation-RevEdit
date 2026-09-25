@@ -80,9 +80,9 @@ docs_service, drive_service, sheets_service = get_google_services()
 
 # --- GEMINI SETUP ---
 FALLBACK_MODELS = [
-    "gemini-2.5-flash",  # Current standard for text tasks
-    "gemini-1.5-flash",  # Fallback
-    "gemini-2.0-flash",
+    "gemini-3.8-flash",  # The exact model Google requested
+    "gemini-3.6-flash",  # Secondary modern fallback
+    "gemini-3.5-flash",
 ]
 
 class ReviewResult(BaseModel):
