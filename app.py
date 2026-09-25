@@ -194,14 +194,12 @@ def _call_gemini(model_name: str, prompt: str, schema_type):
         feedback = getattr(response, 'prompt_feedback', 'Safety blocked')
         raise ValueError(f"Empty output from model: {feedback}")
 
-    # String multiplier prevents paste breaks on markdown backticks
     clean_text = response.text.replace("`" * 3 + "json", "").replace("`" * 3, "").strip()
     match = re.search(r'\{.*\}', clean_text, re.DOTALL)
     if match:
         clean_text = match.group(0)
     return json.loads(clean_text)
 
-# --- AI WORKFLOW: TRANSLATION ---
 def translate_with_ai(english: str, glossary_text: str):
     if not GENAI_AVAILABLE or client is None:
         return {"arabic_translation": "", "glossary_notes": "SDK Error."}
@@ -244,7 +242,6 @@ English Source: "{english}"
 
     return {"arabic_translation": "", "glossary_notes": f"⚠️ API Error: {last_error}"}
 
-# --- AI WORKFLOW: REVIEWER ---
 def review_with_ai(english: str, arabic: str, glossary_text: str):
     if not GENAI_AVAILABLE or client is None:
         return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "SDK Error."}
@@ -291,7 +288,7 @@ If the translation captures meaning and tone accurately, leave it as is. If it m
 
     return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": f"⚠️ API Error: {last_error}"}
 
-# --- DOCUMENT PARSERS & ANOMALY DETECTOR ---
+# --- DOCUMENT PARSERS ---
 def extract_id(url: str):
     match = re.search(r"/(?:d|folders)/([a-zA-Z0-9-_]+)", url)
     if match: return match.group(1)
@@ -302,28 +299,39 @@ def extract_id(url: str):
 
 def extract_text_from_pdf(file_bytes: bytes):
     pdf_document = fitz.open(stream=file_bytes, filetype="pdf")
-    full_text = ""
-    for page_num in range(len(pdf_document)):
-        full_text += pdf_document.load_page(page_num).get_text("text") + "\n"
-    
     blocks = []
-    for p in full_text.split('\n\n'):
-        clean_text = p.replace('\n', ' ').strip()
-        if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)):
-            blocks.append(clean_text)
+    for page_num in range(len(pdf_document)):
+        page_text = pdf_document.load_page(page_num).get_text("text")
+        # Split by multiple newlines or clean lines
+        lines = page_text.split('\n')
+        curr_block = []
+        for line in lines:
+            line_str = line.strip()
+            if line_str:
+                curr_block.append(line_str)
+            else:
+                if curr_block:
+                    joined = " ".join(curr_block)
+                    if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', joined)):
+                        blocks.append(joined)
+                    curr_block = []
+        if curr_block:
+            joined = " ".join(curr_block)
+            if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', joined)):
+                blocks.append(joined)
     return blocks
 
 def extract_text_from_docx(file_bytes: bytes):
     doc = docx.Document(io.BytesIO(file_bytes))
     blocks = []
     
-    # 1. Standard body paragraphs
+    # Body paragraphs
     for p in doc.paragraphs:
         clean_text = p.text.strip()
         if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)): 
             blocks.append(clean_text)
             
-    # 2. Standard tables
+    # Tables
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
@@ -333,10 +341,8 @@ def extract_text_from_docx(file_bytes: bytes):
                         if not blocks or blocks[-1] != clean_text:
                             blocks.append(clean_text)
 
-    # 3. Hidden Text Boxes / Shapes (w:txbxContent)
-    # This extracts text that translators put inside floating frames or boxes
+    # Floating Text Boxes / Shapes
     try:
-        # Search the document XML for any text box containers
         for txbx in doc.element.xpath('//w:txbxContent//w:p'):
             para_text = "".join(node.text for node in txbx.xpath('.//w:t') if node.text).strip()
             if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', para_text)):
@@ -348,18 +354,19 @@ def extract_text_from_docx(file_bytes: bytes):
     return blocks
 
 def _parse_docs_elements(elements):
+    """Deep recursive extraction for Google Docs body, tables, and nested structures."""
     paras = []
     for elem in elements:
         if 'paragraph' in elem:
             para_text = ""
-            for run in elem.get('paragraph').get('elements', []):
+            for run in elem.get('paragraph', {}).get('elements', []):
                 if 'textRun' in run:
-                    para_text += run.get('textRun').get('content')
+                    para_text += run.get('textRun', {}).get('content', '')
             clean_text = para_text.strip()
             if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)): 
                 paras.append(clean_text)
         elif 'table' in elem:
-            for row in elem.get('table').get('tableRows', []):
+            for row in elem.get('table', {}).get('tableRows', []):
                 for cell in row.get('tableCells', []):
                     paras.extend(_parse_docs_elements(cell.get('content', [])))
     return paras
@@ -371,8 +378,25 @@ def extract_text_from_drive(file_id: str, is_retry=False):
         mime_type = file_meta.get("mimeType")
 
         if mime_type == 'application/vnd.google-apps.document':
-            document = docs_svc.documents().get(documentId=file_id).execute()
-            return _parse_docs_elements(document.get('body').get('content', []))
+            # includeTabsContent=True ensures all document tabs are retrieved
+            try:
+                document = docs_svc.documents().get(documentId=file_id, includeTabsContent=True).execute()
+            except Exception:
+                document = docs_svc.documents().get(documentId=file_id).execute()
+
+            all_paras = []
+            # 1. Check for modern Google Docs Tabs
+            tabs = document.get('tabs', [])
+            if tabs:
+                for tab in tabs:
+                    doc_tab = tab.get('documentTab', {})
+                    all_paras.extend(_parse_docs_elements(doc_tab.get('body', {}).get('content', [])))
+            
+            # 2. Extract standard root body
+            if not all_paras:
+                all_paras = _parse_docs_elements(document.get('body', {}).get('content', []))
+
+            return all_paras
 
         elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
             request = drive_svc.files().get_media(fileId=file_id)
@@ -391,9 +415,8 @@ def extract_text_from_drive(file_id: str, is_retry=False):
 
 def smart_align_with_anomaly_detection(paragraphs: list):
     """
-    Bucket alignment logic: Throws all English blocks and Arabic blocks into separate lists,
-    then pairs them sequentially. Flawlessly handles chunked translations (e.g. all Arabic first, 
-    all English second) without throwing consecutive missing errors.
+    Bucket alignment logic: Separates all English and Arabic blocks sequentially,
+    pairing them 1-to-1 regardless of chunked or alternating document layouts.
     """
     en_paras = []
     ar_paras = []
@@ -496,7 +519,9 @@ with tab1:
                         progress_bar.progress((i + 1) / len(paras))
                 else:
                     segments = smart_align_with_anomaly_detection(paras)
-                    st.info(f"Smart Scanner mapped {len(segments)} segments. Processing reviews & resolving anomalies...")
+                    num_en = sum(1 for p in paras if not bool(re.search(r'[\u0600-\u06FF]', p)))
+                    num_ar = sum(1 for p in paras if bool(re.search(r'[\u0600-\u06FF]', p)))
+                    st.info(f"Extracted: {num_en} English blocks & {num_ar} Arabic blocks. Processing review...")
                     progress_bar = st.progress(0)
                     processed_results = []
 
@@ -564,61 +589,112 @@ with tab2:
                 st.rerun()
                 
     else:
-        st.write("Upload separate English and Arabic files to review.")
-        colA, colB = st.columns(2)
-        with colA:
-            file_en = st.file_uploader("1. Upload English Source", type=["docx", "pdf"])
-        with colB:
-            file_ar = st.file_uploader("2. Upload Arabic Translation", type=["docx", "pdf"])
+        st.write("Choose how you want to upload your document(s):")
+        upload_type = st.radio("Upload Format:", ["Option A: Single Bilingual File (Contains both English & Arabic)", "Option B: Two Separate Files"], horizontal=True)
 
-        if st.button("Process Uploaded Files") and file_en and file_ar:
-            en_paras = extract_text_from_pdf(file_en.read()) if file_en.name.endswith('.pdf') else extract_text_from_docx(file_en.read())
-            ar_paras = extract_text_from_pdf(file_ar.read()) if file_ar.name.endswith('.pdf') else extract_text_from_docx(file_ar.read())
-            
-            # Using the bucket alignment algorithm
-            smart_pairs = smart_align_with_anomaly_detection(en_paras + ar_paras)
-            
-            st.info("Aligning files and generating AI review...")
-            progress_bar = st.progress(0)
-            processed_results = []
-            
-            for i, pair in enumerate(smart_pairs):
-                if pair['status'] == 'normal':
-                    ai_res = review_with_ai(pair['english'], pair['arabic'], glossary_data)
-                    processed_results.append({
-                        "id": pair['id'],
-                        "status": ai_res.get("status", "minor_edits"),
-                        "english": pair['english'],
-                        "original_arabic": pair['arabic'],
-                        "suggested_arabic": ai_res.get("suggested_arabic", pair['arabic']),
-                        "reasoning": ai_res.get("reasoning", ""),
-                        "anomaly": pair['anomaly']
-                    })
-                elif pair['status'] == 'misaligned_en':
-                    trans_res = translate_with_ai(pair['english'], glossary_data)
-                    processed_results.append({
-                        "id": pair['id'],
-                        "status": "major_rewrite",
-                        "english": pair['english'],
-                        "original_arabic": "[MISSING IN SOURCE DOCUMENT]",
-                        "suggested_arabic": trans_res.get("arabic_translation", ""),
-                        "reasoning": f"⚠️ Auto-translated from source using Sheet glossary.",
-                        "anomaly": pair['anomaly']
-                    })
-                elif pair['status'] == 'misaligned_ar':
-                    processed_results.append({
-                        "id": pair['id'],
-                        "status": "major_rewrite",
-                        "english": "[MISSING ENGLISH SOURCE]",
-                        "original_arabic": pair['arabic'],
-                        "suggested_arabic": pair['arabic'],
-                        "reasoning": f"⚠️ No English source detected for comparison.",
-                        "anomaly": pair['anomaly']
-                    })
-                progress_bar.progress((i + 1) / len(smart_pairs))
+        if upload_type == "Option A: Single Bilingual File (Contains both English & Arabic)":
+            file_bilingual = st.file_uploader("Upload Document (.docx or .pdf)", type=["docx", "pdf"], key="single_bilingual")
+            if st.button("Process Bilingual File") and file_bilingual:
+                paras = extract_text_from_pdf(file_bilingual.read()) if file_bilingual.name.endswith('.pdf') else extract_text_from_docx(file_bilingual.read())
+                smart_pairs = smart_align_with_anomaly_detection(paras)
+                
+                num_en = sum(1 for p in paras if not bool(re.search(r'[\u0600-\u06FF]', p)))
+                num_ar = sum(1 for p in paras if bool(re.search(r'[\u0600-\u06FF]', p)))
+                st.info(f"Extracted: {num_en} English blocks & {num_ar} Arabic blocks. Generating review...")
+                progress_bar = st.progress(0)
+                processed_results = []
+                
+                for i, pair in enumerate(smart_pairs):
+                    if pair['status'] == 'normal':
+                        ai_res = review_with_ai(pair['english'], pair['arabic'], glossary_data)
+                        processed_results.append({
+                            "id": pair['id'],
+                            "status": ai_res.get("status", "minor_edits"),
+                            "english": pair['english'],
+                            "original_arabic": pair['arabic'],
+                            "suggested_arabic": ai_res.get("suggested_arabic", pair['arabic']),
+                            "reasoning": ai_res.get("reasoning", ""),
+                            "anomaly": pair['anomaly']
+                        })
+                    elif pair['status'] == 'misaligned_en':
+                        trans_res = translate_with_ai(pair['english'], glossary_data)
+                        processed_results.append({
+                            "id": pair['id'],
+                            "status": "major_rewrite",
+                            "english": pair['english'],
+                            "original_arabic": "[MISSING IN SOURCE DOCUMENT]",
+                            "suggested_arabic": trans_res.get("arabic_translation", ""),
+                            "reasoning": f"⚠️ Auto-translated from source using Sheet glossary.",
+                            "anomaly": pair['anomaly']
+                        })
+                    elif pair['status'] == 'misaligned_ar':
+                        processed_results.append({
+                            "id": pair['id'],
+                            "status": "major_rewrite",
+                            "english": "[MISSING ENGLISH SOURCE]",
+                            "original_arabic": pair['arabic'],
+                            "suggested_arabic": pair['arabic'],
+                            "reasoning": f"⚠️ No English source detected for comparison.",
+                            "anomaly": pair['anomaly']
+                        })
+                    progress_bar.progress((i + 1) / len(smart_pairs))
 
-            st.session_state['processed_data'] = processed_results
-            st.rerun()
+                st.session_state['processed_data'] = processed_results
+                st.rerun()
+
+        else:
+            colA, colB = st.columns(2)
+            with colA:
+                file_en = st.file_uploader("1. Upload English Source", type=["docx", "pdf"], key="sep_en")
+            with colB:
+                file_ar = st.file_uploader("2. Upload Arabic Translation", type=["docx", "pdf"], key="sep_ar")
+
+            if st.button("Process Separate Files") and file_en and file_ar:
+                en_paras = extract_text_from_pdf(file_en.read()) if file_en.name.endswith('.pdf') else extract_text_from_docx(file_en.read())
+                ar_paras = extract_text_from_pdf(file_ar.read()) if file_ar.name.endswith('.pdf') else extract_text_from_docx(file_ar.read())
+                
+                smart_pairs = smart_align_with_anomaly_detection(en_paras + ar_paras)
+                st.info(f"Extracted: {len(en_paras)} English blocks & {len(ar_paras)} Arabic blocks. Generating review...")
+                progress_bar = st.progress(0)
+                processed_results = []
+                
+                for i, pair in enumerate(smart_pairs):
+                    if pair['status'] == 'normal':
+                        ai_res = review_with_ai(pair['english'], pair['arabic'], glossary_data)
+                        processed_results.append({
+                            "id": pair['id'],
+                            "status": ai_res.get("status", "minor_edits"),
+                            "english": pair['english'],
+                            "original_arabic": pair['arabic'],
+                            "suggested_arabic": ai_res.get("suggested_arabic", pair['arabic']),
+                            "reasoning": ai_res.get("reasoning", ""),
+                            "anomaly": pair['anomaly']
+                        })
+                    elif pair['status'] == 'misaligned_en':
+                        trans_res = translate_with_ai(pair['english'], glossary_data)
+                        processed_results.append({
+                            "id": pair['id'],
+                            "status": "major_rewrite",
+                            "english": pair['english'],
+                            "original_arabic": "[MISSING IN SOURCE DOCUMENT]",
+                            "suggested_arabic": trans_res.get("arabic_translation", ""),
+                            "reasoning": f"⚠️ Auto-translated from source using Sheet glossary.",
+                            "anomaly": pair['anomaly']
+                        })
+                    elif pair['status'] == 'misaligned_ar':
+                        processed_results.append({
+                            "id": pair['id'],
+                            "status": "major_rewrite",
+                            "english": "[MISSING ENGLISH SOURCE]",
+                            "original_arabic": pair['arabic'],
+                            "suggested_arabic": pair['arabic'],
+                            "reasoning": f"⚠️ No English source detected for comparison.",
+                            "anomaly": pair['anomaly']
+                        })
+                    progress_bar.progress((i + 1) / len(smart_pairs))
+
+                st.session_state['processed_data'] = processed_results
+                st.rerun()
 
 # ==========================================
 # 5. DYNAMIC OUTPUT GRID
