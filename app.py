@@ -7,6 +7,7 @@ import random
 import docx
 import fitz  # PyMuPDF
 import difflib
+import concurrent.futures
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from pydantic import BaseModel, Field
@@ -35,6 +36,9 @@ RETRYABLE_KEYWORDS = (
     "high demand", "UNAVAILABLE", "429", "ResourceExhausted",
     "DeadlineExceeded", "timeout", "Quota",
 )
+
+# THROTLED MULTITHREADING FOR FREE TIER (15 RPM)
+MAX_WORKERS = 2 
 
 def check_password():
     if "password_correct" not in st.session_state:
@@ -199,10 +203,15 @@ def _call_gemini(model_name: str, prompt: str, schema_type):
         feedback = getattr(response, 'prompt_feedback', 'Safety blocked')
         raise ValueError(f"Empty output from model: {feedback}")
 
+    # String multiplier to safely bypass formatting parsers
     clean_text = response.text.replace("`" * 3 + "json", "").replace("`" * 3, "").strip()
     match = re.search(r'\{.*\}', clean_text, re.DOTALL)
     if match:
         clean_text = match.group(0)
+        
+    # PACING DELAY: Protects against Free Tier 15 RPM limit
+    time.sleep(2)
+        
     return json.loads(clean_text)
 
 def translate_with_ai(english: str, glossary_text: str):
@@ -317,6 +326,7 @@ def extract_text_from_docx(file_bytes: bytes):
     doc = docx.Document(io.BytesIO(file_bytes))
     blocks = []
     
+    # XML Deep Sweep: Hunts down every text node across standard paragraphs, tables, floating text boxes, and nested shapes
     for p in doc.element.body.iter():
         if p.tag.endswith('}p'):
             text = "".join(node.text for node in p.iter() if node.tag.endswith('}t') and node.text)
@@ -475,6 +485,82 @@ def prepend_google_doc_with_arabic(file_id: str, arabic_text: str):
         st.error(f"Could not update Google Doc: {e}")
         return False
 
+# --- MULTITHREADING RUNNERS ---
+def run_parallel_translations(paras, glossary_data, progress_bar):
+    processed = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(translate_with_ai, text, glossary_data): (i, text) for i, text in enumerate(paras)}
+        for count, future in enumerate(concurrent.futures.as_completed(futures), 1):
+            i, text = futures[future]
+            try:
+                res = future.result()
+            except Exception as e:
+                res = {"arabic_translation": "", "glossary_notes": f"Threading Error: {e}"}
+            processed.append({
+                "id": i + 1,
+                "english": text,
+                "arabic_translation": res.get("arabic_translation", ""),
+                "glossary_notes": res.get("glossary_notes", "")
+            })
+            progress_bar.progress(count / len(paras))
+    processed.sort(key=lambda x: x["id"])
+    return processed
+
+def run_parallel_reviews(segments, glossary_data, progress_bar):
+    processed = []
+    
+    def review_router(item):
+        if item['status'] == 'normal':
+            ai_res = review_with_ai(item['english'], item['arabic'], glossary_data)
+            return {
+                "id": item['id'],
+                "status": ai_res.get("status", "minor_edits"),
+                "english": item['english'],
+                "original_arabic": item['arabic'],
+                "suggested_arabic": ai_res.get("suggested_arabic", item['arabic']),
+                "reasoning": ai_res.get("reasoning", ""),
+                "anomaly": item['anomaly']
+            }
+        elif item['status'] == 'misaligned_en':
+            trans_res = translate_with_ai(item['english'], glossary_data)
+            return {
+                "id": item['id'],
+                "status": "major_rewrite",
+                "english": item['english'],
+                "original_arabic": "[MISSING IN SOURCE DOCUMENT]",
+                "suggested_arabic": trans_res.get("arabic_translation", ""),
+                "reasoning": f"⚠️ Auto-translated from source using Sheet glossary.",
+                "anomaly": item['anomaly']
+            }
+        else: # misaligned_ar
+            return {
+                "id": item['id'],
+                "status": "major_rewrite",
+                "english": "[MISSING ENGLISH SOURCE]",
+                "original_arabic": item['arabic'],
+                "suggested_arabic": item['arabic'],
+                "reasoning": f"⚠️ No English source detected for comparison.",
+                "anomaly": item['anomaly']
+            }
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(review_router, item): item for item in segments}
+        for count, future in enumerate(concurrent.futures.as_completed(futures), 1):
+            try:
+                res = future.result()
+            except Exception as e:
+                item = futures[future]
+                res = {
+                    "id": item['id'], "status": "major_rewrite", "english": item['english'],
+                    "original_arabic": item['arabic'], "suggested_arabic": item['arabic'],
+                    "reasoning": f"Threading Error: {e}", "anomaly": item['anomaly']
+                }
+            processed.append(res)
+            progress_bar.progress(count / len(segments))
+            
+    processed.sort(key=lambda x: x["id"])
+    return processed
+
 # ==========================================
 # 4. DASHBOARD UI & PUSH BUTTON ROUTING
 # ==========================================
@@ -568,62 +654,17 @@ if st.session_state["input_method"] == "drive":
 
             if paras:
                 if st.session_state["app_mode"] == "Translator Mode":
-                    st.info(f"Extracted {len(paras)} segments. Translating via AI...")
+                    st.info(f"Extracted {len(paras)} segments. Translating via AI concurrently...")
                     progress_bar = st.progress(0)
-                    processed_results = []
-                    for i, en_text in enumerate(paras):
-                        ai_result = translate_with_ai(en_text, glossary_data)
-                        processed_results.append({
-                            "id": i + 1,
-                            "english": en_text,
-                            "arabic_translation": ai_result.get("arabic_translation", ""),
-                            "glossary_notes": ai_result.get("glossary_notes", "")
-                        })
-                        progress_bar.progress((i + 1) / len(paras))
+                    st.session_state['processed_data'] = run_parallel_translations(paras, glossary_data, progress_bar)
                 else:
                     segments = smart_align_with_anomaly_detection(paras)
                     num_en = sum(1 for p in paras if not bool(re.search(r'[\u0600-\u06FF]', p)))
                     num_ar = sum(1 for p in paras if bool(re.search(r'[\u0600-\u06FF]', p)))
-                    st.info(f"Extracted: {num_en} English blocks & {num_ar} Arabic blocks. Processing review...")
+                    st.info(f"Extracted: {num_en} English blocks & {num_ar} Arabic blocks. Processing reviews concurrently...")
                     progress_bar = st.progress(0)
-                    processed_results = []
+                    st.session_state['processed_data'] = run_parallel_reviews(segments, glossary_data, progress_bar)
 
-                    for i, item in enumerate(segments):
-                        if item['status'] == 'normal':
-                            ai_res = review_with_ai(item['english'], item['arabic'], glossary_data)
-                            processed_results.append({
-                                "id": item['id'],
-                                "status": ai_res.get("status", "minor_edits"),
-                                "english": item['english'],
-                                "original_arabic": item['arabic'],
-                                "suggested_arabic": ai_res.get("suggested_arabic", item['arabic']),
-                                "reasoning": ai_res.get("reasoning", ""),
-                                "anomaly": item['anomaly']
-                            })
-                        elif item['status'] == 'misaligned_en':
-                            trans_res = translate_with_ai(item['english'], glossary_data)
-                            processed_results.append({
-                                "id": item['id'],
-                                "status": "major_rewrite",
-                                "english": item['english'],
-                                "original_arabic": "[MISSING IN SOURCE DOCUMENT]",
-                                "suggested_arabic": trans_res.get("arabic_translation", ""),
-                                "reasoning": f"⚠️ Auto-translated from source using Sheet glossary.",
-                                "anomaly": item['anomaly']
-                            })
-                        elif item['status'] == 'misaligned_ar':
-                            processed_results.append({
-                                "id": item['id'],
-                                "status": "major_rewrite",
-                                "english": "[MISSING ENGLISH SOURCE]",
-                                "original_arabic": item['arabic'],
-                                "suggested_arabic": item['arabic'],
-                                "reasoning": f"⚠️ No English source detected for comparison.",
-                                "anomaly": item['anomaly']
-                            })
-                        progress_bar.progress((i + 1) / len(segments))
-
-                st.session_state['processed_data'] = processed_results
                 st.rerun()
 
 elif st.session_state["input_method"] == "upload":
@@ -634,20 +675,9 @@ elif st.session_state["input_method"] == "upload":
         if st.button("Process & Translate File") and file_en:
             paras = extract_text_from_pdf(file_en.read()) if file_en.name.endswith('.pdf') else extract_text_from_docx(file_en.read())
             if paras:
-                st.info(f"Extracted {len(paras)} segments. Translating via AI...")
+                st.info(f"Extracted {len(paras)} segments. Translating via AI concurrently...")
                 progress_bar = st.progress(0)
-                processed_results = []
-                for i, en_text in enumerate(paras):
-                    ai_result = translate_with_ai(en_text, glossary_data)
-                    processed_results.append({
-                        "id": i + 1,
-                        "english": en_text,
-                        "arabic_translation": ai_result.get("arabic_translation", ""),
-                        "glossary_notes": ai_result.get("glossary_notes", "")
-                    })
-                    progress_bar.progress((i + 1) / len(paras))
-
-                st.session_state['processed_data'] = processed_results
+                st.session_state['processed_data'] = run_parallel_translations(paras, glossary_data, progress_bar)
                 st.rerun()
                 
     else:
@@ -662,46 +692,9 @@ elif st.session_state["input_method"] == "upload":
                 
                 num_en = sum(1 for p in paras if not bool(re.search(r'[\u0600-\u06FF]', p)))
                 num_ar = sum(1 for p in paras if bool(re.search(r'[\u0600-\u06FF]', p)))
-                st.info(f"Extracted: {num_en} English blocks & {num_ar} Arabic blocks. Generating review...")
+                st.info(f"Extracted: {num_en} English blocks & {num_ar} Arabic blocks. Generating reviews concurrently...")
                 progress_bar = st.progress(0)
-                processed_results = []
-                
-                for i, pair in enumerate(smart_pairs):
-                    if pair['status'] == 'normal':
-                        ai_res = review_with_ai(pair['english'], pair['arabic'], glossary_data)
-                        processed_results.append({
-                            "id": pair['id'],
-                            "status": ai_res.get("status", "minor_edits"),
-                            "english": pair['english'],
-                            "original_arabic": pair['arabic'],
-                            "suggested_arabic": ai_res.get("suggested_arabic", pair['arabic']),
-                            "reasoning": ai_res.get("reasoning", ""),
-                            "anomaly": pair['anomaly']
-                        })
-                    elif pair['status'] == 'misaligned_en':
-                        trans_res = translate_with_ai(pair['english'], glossary_data)
-                        processed_results.append({
-                            "id": pair['id'],
-                            "status": "major_rewrite",
-                            "english": pair['english'],
-                            "original_arabic": "[MISSING IN SOURCE DOCUMENT]",
-                            "suggested_arabic": trans_res.get("arabic_translation", ""),
-                            "reasoning": f"⚠️ Auto-translated from source using Sheet glossary.",
-                            "anomaly": pair['anomaly']
-                        })
-                    elif pair['status'] == 'misaligned_ar':
-                        processed_results.append({
-                            "id": pair['id'],
-                            "status": "major_rewrite",
-                            "english": "[MISSING ENGLISH SOURCE]",
-                            "original_arabic": pair['arabic'],
-                            "suggested_arabic": pair['arabic'],
-                            "reasoning": f"⚠️ No English source detected for comparison.",
-                            "anomaly": pair['anomaly']
-                        })
-                    progress_bar.progress((i + 1) / len(smart_pairs))
-
-                st.session_state['processed_data'] = processed_results
+                st.session_state['processed_data'] = run_parallel_reviews(smart_pairs, glossary_data, progress_bar)
                 st.rerun()
 
         else:
@@ -716,46 +709,9 @@ elif st.session_state["input_method"] == "upload":
                 ar_paras = extract_text_from_pdf(file_ar.read()) if file_ar.name.endswith('.pdf') else extract_text_from_docx(file_ar.read())
                 
                 smart_pairs = smart_align_with_anomaly_detection(en_paras + ar_paras)
-                st.info(f"Extracted: {len(en_paras)} English blocks & {len(ar_paras)} Arabic blocks. Generating review...")
+                st.info(f"Extracted: {len(en_paras)} English blocks & {len(ar_paras)} Arabic blocks. Generating reviews concurrently...")
                 progress_bar = st.progress(0)
-                processed_results = []
-                
-                for i, pair in enumerate(smart_pairs):
-                    if pair['status'] == 'normal':
-                        ai_res = review_with_ai(pair['english'], pair['arabic'], glossary_data)
-                        processed_results.append({
-                            "id": pair['id'],
-                            "status": ai_res.get("status", "minor_edits"),
-                            "english": pair['english'],
-                            "original_arabic": pair['arabic'],
-                            "suggested_arabic": ai_res.get("suggested_arabic", pair['arabic']),
-                            "reasoning": ai_res.get("reasoning", ""),
-                            "anomaly": pair['anomaly']
-                        })
-                    elif pair['status'] == 'misaligned_en':
-                        trans_res = translate_with_ai(pair['english'], glossary_data)
-                        processed_results.append({
-                            "id": pair['id'],
-                            "status": "major_rewrite",
-                            "english": pair['english'],
-                            "original_arabic": "[MISSING IN SOURCE DOCUMENT]",
-                            "suggested_arabic": trans_res.get("arabic_translation", ""),
-                            "reasoning": f"⚠️ Auto-translated from source using Sheet glossary.",
-                            "anomaly": pair['anomaly']
-                        })
-                    elif pair['status'] == 'misaligned_ar':
-                        processed_results.append({
-                            "id": pair['id'],
-                            "status": "major_rewrite",
-                            "english": "[MISSING ENGLISH SOURCE]",
-                            "original_arabic": pair['arabic'],
-                            "suggested_arabic": pair['arabic'],
-                            "reasoning": f"⚠️ No English source detected for comparison.",
-                            "anomaly": pair['anomaly']
-                        })
-                    progress_bar.progress((i + 1) / len(smart_pairs))
-
-                st.session_state['processed_data'] = processed_results
+                st.session_state['processed_data'] = run_parallel_reviews(smart_pairs, glossary_data, progress_bar)
                 st.rerun()
 
 # ==========================================
