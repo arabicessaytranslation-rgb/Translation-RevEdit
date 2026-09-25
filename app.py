@@ -474,7 +474,8 @@ if st.session_state['processed_data']:
                 st.info(item['english'])
             with col_ar:
                 st.markdown("**Original Arabic Translation:**")
-                st.info(f"<div dir='rtl' style='text-align: right;'>{item['original_arabic']}</div>", unsafe_allow_html=True)
+                # Changed st.info to st.markdown to allow HTML rendering
+                st.markdown(f"<div dir='rtl' style='text-align: right; background-color: #e0f2fe; padding: 15px; border-radius: 8px; color: #0369a1;'>{item['original_arabic']}</div>", unsafe_allow_html=True)
             
             # Row 2: Visual Diff Highlights
             st.markdown("**Visual Changes (Red = Removed, Green = Added):**")
