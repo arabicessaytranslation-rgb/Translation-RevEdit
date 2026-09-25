@@ -305,31 +305,35 @@ def extract_text_from_pdf(file_bytes: bytes):
     full_text = ""
     for page_num in range(len(pdf_document)):
         full_text += pdf_document.load_page(page_num).get_text("text") + "\n"
-    return [p.replace('\n', ' ').strip() for p in full_text.split('\n\n') if p.replace('\n', ' ').strip()]
+    
+    blocks = []
+    for p in full_text.split('\n\n'):
+        clean_text = p.replace('\n', ' ').strip()
+        # Filter: Must contain at least one English or Arabic letter
+        if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)):
+            blocks.append(clean_text)
+    return blocks
 
 def extract_text_from_docx(file_bytes: bytes):
     doc = docx.Document(io.BytesIO(file_bytes))
     blocks = []
     
-    # 1. Read normal paragraphs outside tables
     for p in doc.paragraphs:
-        if p.text.strip(): 
-            blocks.append(p.text.strip())
+        clean_text = p.text.strip()
+        if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)): 
+            blocks.append(clean_text)
             
-    # 2. Read text inside tables (Translators use this 90% of the time)
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for p in cell.paragraphs:
                     clean_text = p.text.strip()
-                    if clean_text:
-                        # Prevent merged-cell duplication glitch in python-docx
+                    if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)):
                         if not blocks or blocks[-1] != clean_text:
                             blocks.append(clean_text)
     return blocks
 
 def _parse_docs_elements(elements):
-    """Recursively parses Google Docs elements, diving into tables if they exist."""
     paras = []
     for elem in elements:
         if 'paragraph' in elem:
@@ -338,12 +342,12 @@ def _parse_docs_elements(elements):
                 if 'textRun' in run:
                     para_text += run.get('textRun').get('content')
             clean_text = para_text.strip()
-            if clean_text: 
+            # Filter: Must contain at least one English or Arabic letter
+            if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)): 
                 paras.append(clean_text)
         elif 'table' in elem:
             for row in elem.get('table').get('tableRows', []):
                 for cell in row.get('tableCells', []):
-                    # Recursively pull text from inside the table cell
                     paras.extend(_parse_docs_elements(cell.get('content', [])))
     return paras
 
@@ -355,7 +359,6 @@ def extract_text_from_drive(file_id: str, is_retry=False):
 
         if mime_type == 'application/vnd.google-apps.document':
             document = docs_svc.documents().get(documentId=file_id).execute()
-            # Pass the entire document body into the recursive table parser
             return _parse_docs_elements(document.get('body').get('content', []))
 
         elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
@@ -374,10 +377,6 @@ def extract_text_from_drive(file_id: str, is_retry=False):
         return None
 
 def smart_align_with_anomaly_detection(paragraphs: list):
-    """
-    Scans sequential paragraphs, detects language, and flags structural anomalies
-    (e.g., consecutive EN-EN or AR-AR) without cascading misalignment down the document.
-    """
     tagged = []
     for p in paragraphs:
         is_ar = bool(re.search(r'[\u0600-\u06FF]', p))
@@ -392,7 +391,6 @@ def smart_align_with_anomaly_detection(paragraphs: list):
         has_next = (i + 1 < len(tagged))
         next_item = tagged[i + 1] if has_next else None
 
-        # Case 1: Standard alternating pair (EN followed immediately by AR)
         if curr['lang'] == 'EN' and has_next and next_item['lang'] == 'AR':
             aligned_segments.append({
                 'id': seg_id,
@@ -402,8 +400,6 @@ def smart_align_with_anomaly_detection(paragraphs: list):
                 'anomaly': None
             })
             i += 2
-
-        # Case 2: Inverted pair (AR followed immediately by EN)
         elif curr['lang'] == 'AR' and has_next and next_item['lang'] == 'EN':
             aligned_segments.append({
                 'id': seg_id,
@@ -413,8 +409,6 @@ def smart_align_with_anomaly_detection(paragraphs: list):
                 'anomaly': 'Inverted Order: Arabic appeared before English in document.'
             })
             i += 2
-
-        # Case 3: Consecutive English (Missing corresponding Arabic block)
         elif curr['lang'] == 'EN':
             aligned_segments.append({
                 'id': seg_id,
@@ -424,8 +418,6 @@ def smart_align_with_anomaly_detection(paragraphs: list):
                 'anomaly': 'Out of Order: Consecutive English paragraphs detected without corresponding Arabic.'
             })
             i += 1
-
-        # Case 4: Consecutive Arabic (Missing English source block)
         elif curr['lang'] == 'AR':
             aligned_segments.append({
                 'id': seg_id,
