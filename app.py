@@ -7,6 +7,8 @@ import random
 import docx
 import fitz  # PyMuPDF
 import difflib
+import smtplib
+from email.message import EmailMessage
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from pydantic import BaseModel, Field
@@ -159,6 +161,26 @@ def get_fallback_models():
 # ==========================================
 # 3. HELPER FUNCTIONS & AI BATCH ENGINE
 # ==========================================
+def send_email_notification(process_name: str, operator_name: str):
+    """Sends a completion notification email."""
+    try:
+        sender_email = st.secrets["SMTP_EMAIL"]
+        sender_password = st.secrets["SMTP_PASSWORD"]
+        receiver_email = "arabicessaytranslation@gmail.com"
+
+        msg = EmailMessage()
+        msg.set_content(f"Hello,\n\nThe {process_name} process has been successfully completed and pushed to Google Drive.\n\nOperator Name: {operator_name}\n\nBest,\n12-Step AI Suite")
+        msg['Subject'] = f"Task Completed: {process_name} by {operator_name}"
+        msg['From'] = sender_email
+        msg['To'] = receiver_email
+
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+    except Exception as e:
+        st.error(f"Failed to send email notification. Ensure SMTP_EMAIL and SMTP_PASSWORD are set in st.secrets. Error: {e}")
+
+
 @st.cache_data(ttl=3600)
 def fetch_glossary():
     try:
@@ -313,7 +335,6 @@ Segments to Translate:
             try:
                 parsed = _call_gemini(model_name, prompt, TranslationBatchResult)
                 items = parsed.get("items", [])
-                # strict validation: Did we get the right count and exact IDs back?
                 if len(items) == len(batch_segments) and all(items[i]['id'] == batch_segments[i]['id'] for i in range(len(items))):
                     return items
             except Exception as e:
@@ -322,7 +343,6 @@ Segments to Translate:
                     continue
                 break
                 
-    # SHATTER AND RESCUE: If the batch fails validation or API errors out, gracefully fallback to 1-by-1 processing
     results = []
     for seg in batch_segments:
         single_res = translate_with_ai(seg['english'], glossary_text)
@@ -367,7 +387,6 @@ Pairs to Review:
                     continue
                 break
                 
-    # SHATTER AND RESCUE FALLBACK
     results = []
     for seg in batch_segments:
         single_res = review_with_ai(seg['english'], seg['arabic'], glossary_text)
@@ -378,7 +397,6 @@ Pairs to Review:
             "reasoning": single_res['reasoning']
         })
     return results
-
 
 # ==========================================
 # 4. DOCUMENT PARSERS & ANOMALY DETECTOR
@@ -533,14 +551,11 @@ def push_to_drive_translator(document_id, final_arabic_text):
 def push_to_drive_reviewer(document_id, approved_segments):
     docs_svc, _, _ = get_google_services()
     try:
-        # Filter segments that have exact coordinate indices
         valid_segments = [seg for seg in approved_segments if seg['ar_start'] is not None and seg['ar_end'] is not None]
-        # Sort coordinates descending (bottom-to-top) to prevent index shifting!
         valid_segments.sort(key=lambda x: x['ar_start'], reverse=True)
         
         requests = []
         for seg in valid_segments:
-            # -1 to preserve the trailing newline of the Google Doc paragraph block
             requests.append({
                 'deleteContentRange': {
                     'range': {
@@ -628,7 +643,6 @@ if st.session_state["input_method"] == "drive":
                     progress_bar = st.progress(0)
                     processed_results = []
                     
-                    # Batch processing
                     batches = [paras[i:i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
                     for idx, batch in enumerate(batches):
                         batch_payload = [{'id': j + 1, 'english': p['text']} for j, p in enumerate(batch)]
@@ -667,7 +681,6 @@ if st.session_state["input_method"] == "drive":
                             })
                         progress_bar.progress((idx + 1) / len(batches))
                         
-                    # Handle Anomalies One-by-One outside the batches
                     for item in segments:
                         if item['status'] == 'misaligned_en':
                             trans_res = translate_with_ai(item['english'], glossary_data)
@@ -691,7 +704,6 @@ if st.session_state["input_method"] == "drive":
 
 elif st.session_state["input_method"] == "upload":
     st.info("File upload ignores the Push-to-Drive feature. Use Drive Input for full write-back automation.")
-    # File upload logic remains simple because it can't write back
     file_upload = st.file_uploader("Upload Source File", type=["docx", "pdf"])
     if st.button("Process File") and file_upload:
         paras = extract_text_from_pdf(file_upload.read()) if file_upload.name.endswith('.pdf') else extract_text_from_docx(file_upload.read())
@@ -792,19 +804,33 @@ if st.session_state['processed_data']:
 
     if approved_count == total_segments and total_segments > 0:
         st.success("🎉 All segments approved! You can copy the text below or push it directly to Google Docs.")
+
+        # --- MANDATORY NAME INPUT ---
+        user_role = "Translator" if st.session_state["app_mode"] == "Translator Mode" else "Reviewer"
+        operator_name = st.text_input(f"👤 Enter your name ({user_role}) to unlock the Push button:", key="operator_name")
+        push_disabled = not bool(operator_name.strip())
+
+        if push_disabled:
+            st.warning("⚠️ Name is required to push to Google Drive and send the completion notification.")
         
         if st.session_state["app_mode"] == "Translator Mode":
             final_arabic_blob = "\n\n".join(finalized_data)
             st.text_area("Compiled Arabic Text", value=final_arabic_blob, height=400)
             
             if st.session_state['input_method'] == 'drive' and st.session_state.get('source_file_id'):
-                if st.button("🚀 Push Translation to Google Doc", type="primary", use_container_width=True):
+                if st.button("🚀 Push Translation to Google Doc", type="primary", use_container_width=True, disabled=push_disabled):
                     with st.spinner("Pushing to Drive..."):
                         success = push_to_drive_translator(st.session_state['source_file_id'], final_arabic_blob)
-                        if success: st.balloons(); st.success("Translation pushed successfully!")
+                        if success:
+                            send_email_notification("Translation", operator_name.strip())
+                            st.balloons()
+                            st.success("Translation pushed successfully and notification sent!")
         else:
             if st.session_state['input_method'] == 'drive' and st.session_state.get('source_file_id'):
-                if st.button("🚀 Apply Revisions to Google Doc", type="primary", use_container_width=True):
+                if st.button("🚀 Apply Revisions to Google Doc", type="primary", use_container_width=True, disabled=push_disabled):
                     with st.spinner("Rewriting Document..."):
                         success = push_to_drive_reviewer(st.session_state['source_file_id'], finalized_data)
-                        if success: st.balloons(); st.success("Revisions applied successfully!")
+                        if success:
+                            send_email_notification("Review", operator_name.strip())
+                            st.balloons()
+                            st.success("Revisions applied successfully and notification sent!")
