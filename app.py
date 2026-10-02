@@ -36,30 +36,29 @@ RETRYABLE_KEYWORDS = (
     "DeadlineExceeded", "timeout", "Quota",
 )
 
-# --- ROLE-BASED AUTHENTICATION ---
+# --- EMAIL-ONLY AUTHENTICATION ---
 def login_screen():
     if st.session_state.get("authenticated"):
         return True
 
-    st.title("🔐 Login to 12-Step AI Suite")
+    st.title("🤝 12-Step AI Suite: Volunteer Portal")
     with st.form("login_form"):
-        email = st.text_input("Email").strip().lower()
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login")
+        email = st.text_input("Enter your registered email address").strip().lower()
+        submitted = st.form_submit_button("Access Portal")
 
         if submitted:
-            users = st.secrets.get("users", {})
-            if email in users and users[email]["password"] == password:
+            volunteers = st.secrets.get("volunteers", {})
+            if email in volunteers:
                 st.session_state["authenticated"] = True
                 st.session_state["user_email"] = email
-                st.session_state["user_role"] = users[email]["role"]
-                st.session_state["user_name"] = users[email]["name"]
+                st.session_state["user_role"] = volunteers[email]["role"]
+                st.session_state["user_name"] = volunteers[email]["name"]
                 
                 # Auto-assign app mode based on role
-                st.session_state["app_mode"] = "Translator Mode" if users[email]["role"] == "translator" else "Reviewer Mode"
+                st.session_state["app_mode"] = "Translator Mode" if volunteers[email]["role"] == "translator" else "Reviewer Mode"
                 st.rerun()
             else:
-                st.error("Invalid email or password")
+                st.error("Email not recognized. Please contact the coordinator.")
     return False
 
 if not login_screen():
@@ -71,6 +70,7 @@ if 'processed_data' not in st.session_state:
 
 if 'source_file_id' not in st.session_state:
     st.session_state['source_file_id'] = None
+
 
 # ==========================================
 # 2. INITIALIZE GOOGLE & AI SERVICES
@@ -161,26 +161,32 @@ def get_fallback_models():
             pass
     return ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash"]
 
+
 # ==========================================
 # 3. HELPER FUNCTIONS & AI BATCH ENGINE
 # ==========================================
-def send_email_notification(process_name: str, operator_name: str):
+def send_email_notification(process_name: str, operator_name: str, operator_email: str):
+    """Sends a completion notification to both the volunteer and the admin."""
     try:
         sender_email = st.secrets["SMTP_EMAIL"]
         sender_password = st.secrets["SMTP_PASSWORD"]
-        receiver_email = "arabicessaytranslation@gmail.com"
+        admin_email = "arabicessaytranslation@gmail.com"
 
         msg = EmailMessage()
-        msg.set_content(f"Hello,\n\nThe {process_name} process has been successfully completed and pushed to Google Drive.\n\nOperator Name: {operator_name}\n\nBest,\n12-Step AI Suite")
+        msg.set_content(
+            f"Hello {operator_name},\n\n"
+            f"Thank you for your service! The {process_name} process has been successfully completed and pushed to Google Drive.\n\n"
+            f"Best,\n12-Step AI Suite"
+        )
         msg['Subject'] = f"Task Completed: {process_name} by {operator_name}"
         msg['From'] = sender_email
-        msg['To'] = receiver_email
+        msg['To'] = f"{operator_email}, {admin_email}" 
 
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(sender_email, sender_password)
             server.send_message(msg)
     except Exception as e:
-        st.error(f"Failed to send email notification. Ensure SMTP_EMAIL and SMTP_PASSWORD are set in st.secrets. Error: {e}")
+        st.error(f"Failed to send email notification. Error: {e}")
 
 @st.cache_data(ttl=3600)
 def fetch_glossary():
@@ -246,12 +252,14 @@ def _call_gemini(model_name: str, prompt: str, schema_type):
         clean_text = match.group(0)
     return json.loads(clean_text)
 
+# --- SINGLE ITEM AI CALLS (THE FAILSAFES) ---
 def translate_with_ai(english: str, glossary_text: str):
     prompt = f"""You are an expert bilingual translator specializing in 12-step recovery literature. 
 Translate the English text into Arabic accurately, ensuring the tone remains clinical, professional, and non-moralizing.
 
 CRITICAL INSTRUCTIONS:
 - Do not perform blind word-for-word replacements. Actively understand semantic meaning.
+- When pronouns like "it" appear (e.g., "it works") referring to concepts such as "the program", ensure the Arabic translation reflects the correct contextual noun/glossary term and grammatical gender.
 - Apply the glossary terms naturally into the sentence flow.
 
 GLOSSARY TERMS:
@@ -278,6 +286,11 @@ def review_with_ai(english: str, arabic: str, glossary_text: str):
     prompt = f"""You are an expert bilingual editor specializing in 12-step recovery literature. 
 Ensure the Arabic translation is accurate, clinical, professional, and grammatically sound.
 
+CRITICAL INSTRUCTIONS:
+- Do not perform blind word-for-word replacements.
+- If English pronouns refer to specific concepts (e.g. "it works" referring to "the program"), verify the Arabic contextually renders this clearly.
+- Respect recovery glossary terms and verify sentence flow.
+
 GLOSSARY TERMS:
 {glossary_text}
 
@@ -299,23 +312,33 @@ If the translation captures meaning and tone accurately, leave it as is. If it m
                     _backoff_sleep(attempt)
                     continue
                 break
-    return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": f"⚠️ Fallback Error."}
+    return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": f"⚠️️ Fallback Error."}
 
+# --- MICRO-BATCH AI CALLS & AUTO-CORRECT CASCADE ---
 def translate_batch_with_fallback(batch_segments, glossary_text):
     if not GENAI_AVAILABLE or client is None:
         return [translate_with_ai(seg['english'], glossary_text) for seg in batch_segments]
+
     input_payload = "\n\n".join([f"ID: {seg['id']}\nText: {seg['english']}" for seg in batch_segments])
+    
     prompt = f"""You are an expert bilingual translator specializing in 12-step recovery literature. 
-Translate the following English segments into Arabic accurately.
+Translate the following English segments into Arabic accurately. Ensure the tone remains clinical, professional, and non-moralizing.
+
+CRITICAL INSTRUCTIONS FOR THIS BATCH:
+1. Narrative Flow: These segments are sequential parts of a single document. Maintain consistent grammatical gender, tone, and pronoun references across all segments.
+2. Contextual Nuance: Do not perform blind word-for-word replacements. Actively understand the semantic meaning.
+3. Pronoun Resolution: When English pronouns like "it" or "we" appear (e.g., "it works", "we admitted"), ensure the Arabic translation reflects the correct contextual noun (e.g., "the program", "the fellowship") and its proper Arabic grammatical gender.
+4. Glossary Integration: Apply the glossary terms naturally into the sentence flow without forcing them if the grammar breaks.
 
 GLOSSARY TERMS:
 {glossary_text}
 
 Segments to Translate:
 {input_payload}"""
+
     active_models = get_fallback_models()
     for model_name in active_models:
-        for attempt in range(2):
+        for attempt in range(2): 
             try:
                 parsed = _call_gemini(model_name, prompt, TranslationBatchResult)
                 items = parsed.get("items", [])
@@ -326,6 +349,7 @@ Segments to Translate:
                     _backoff_sleep(attempt)
                     continue
                 break
+                
     results = []
     for seg in batch_segments:
         single_res = translate_with_ai(seg['english'], glossary_text)
@@ -339,15 +363,23 @@ Segments to Translate:
 def review_batch_with_fallback(batch_segments, glossary_text):
     if not GENAI_AVAILABLE or client is None:
         return [review_with_ai(seg['english'], seg['arabic'], glossary_text) for seg in batch_segments]
+
     input_payload = "\n\n".join([f"ID: {seg['id']}\nEnglish: {seg['english']}\nArabic: {seg['arabic']}" for seg in batch_segments])
+    
     prompt = f"""You are an expert bilingual editor specializing in 12-step recovery literature. 
-Review the following English/Arabic pairs for accuracy, tone, and glossary adherence.
+Review the following English/Arabic pairs for accuracy, tone, and glossary adherence. Ensure the tone remains clinical, professional, and non-moralizing.
+
+CRITICAL INSTRUCTIONS FOR THIS BATCH:
+1. Narrative Flow: These segments are sequential parts of a single document. Maintain consistent grammatical gender, tone, and pronoun references across all segments.
+2. Contextual Nuance: Do not perform blind word-for-word replacements. Actively understand the semantic meaning.
+3. Glossary Integration: Respect recovery glossary terms. If the existing Arabic translation captures the meaning and tone accurately, leave it as is. If it misses glossary nuance or sounds unnatural, provide the polished Arabic translation.
 
 GLOSSARY TERMS:
 {glossary_text}
 
 Pairs to Review:
 {input_payload}"""
+
     active_models = get_fallback_models()
     for model_name in active_models:
         for attempt in range(2):
@@ -361,6 +393,7 @@ Pairs to Review:
                     _backoff_sleep(attempt)
                     continue
                 break
+                
     results = []
     for seg in batch_segments:
         single_res = review_with_ai(seg['english'], seg['arabic'], glossary_text)
@@ -373,7 +406,7 @@ Pairs to Review:
     return results
 
 # ==========================================
-# 4. DOCUMENT PARSERS (DRIVE ONLY)
+# 4. DOCUMENT PARSERS & ANOMALY DETECTOR
 # ==========================================
 def extract_id(url: str):
     match = re.search(r"/(?:d|folders)/([a-zA-Z0-9-_]+)", url)
@@ -432,8 +465,9 @@ def extract_text_from_drive(file_id: str, is_retry=False):
                 all_paras.extend(sweep_doc_obj(document))
 
             return all_paras
+
         else:
-            st.error(f"Unsupported file type: {mime_type}. Only Google Docs are supported.")
+            st.error(f"Unsupported file type: {mime_type}. Please use Google Docs.")
             return None
     except Exception as e:
         err_str = str(e)
@@ -559,7 +593,6 @@ with st.container(border=True):
 
 st.divider()
 
-# Input Section (Google Drive Only)
 st.markdown("### ☁️ Process Google Drive Document")
 doc_url = st.text_input("Paste Google Docs File URL Here:")
 
@@ -627,7 +660,7 @@ if st.button("Load & Process Document", type="primary") and doc_url:
                         processed_results.append({
                             "id": item['id'], "status": "major_rewrite", "english": "[MISSING]",
                             "original_arabic": item['arabic'], "suggested_arabic": item['arabic'],
-                            "reasoning": "⚠️️ Orphaned Arabic. Ignored.", "anomaly": item['anomaly'],
+                            "reasoning": "⚠️ Orphaned Arabic. Ignored.", "anomaly": item['anomaly'],
                             "ar_start": item['ar_start'], "ar_end": item['ar_end']
                         })
                         
@@ -686,8 +719,9 @@ if st.session_state['processed_data']:
     if approved_count == total_segments and total_segments > 0:
         st.success("🎉 All segments approved! Ready to push to Google Docs.")
 
-        # Identify operator automatically
+        # Automatically pull operator details from login session
         operator_name = st.session_state["user_name"]
+        operator_email = st.session_state["user_email"]
         
         if st.session_state["app_mode"] == "Translator Mode":
             final_arabic_blob = "\n\n".join(finalized_data)
@@ -698,15 +732,15 @@ if st.session_state['processed_data']:
                     with st.spinner("Pushing to Drive..."):
                         success = push_to_drive_translator(st.session_state['source_file_id'], final_arabic_blob)
                         if success:
-                            send_email_notification("Translation", operator_name)
+                            send_email_notification("Translation", operator_name, operator_email)
                             st.balloons()
-                            st.success("Translation pushed successfully and notification sent!")
+                            st.success("Translation pushed successfully and receipt sent to your inbox!")
         else:
             if st.session_state.get('source_file_id'):
                 if st.button("🚀 Apply Revisions to Google Doc", type="primary", use_container_width=True):
                     with st.spinner("Rewriting Document..."):
                         success = push_to_drive_reviewer(st.session_state['source_file_id'], finalized_data)
                         if success:
-                            send_email_notification("Review", operator_name)
+                            send_email_notification("Review", operator_name, operator_email)
                             st.balloons()
-                            st.success("Revisions applied successfully and notification sent!")
+                            st.success("Revisions applied successfully and receipt sent to your inbox!")
