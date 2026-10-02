@@ -23,29 +23,24 @@ except ImportError:
 # ==========================================
 st.set_page_config(page_title="12-Step AI Suite: Translate & Review", layout="wide")
 
-# --- CUSTOM CSS FOR UI/UX BEST PRACTICES ---
 def apply_custom_css():
     st.markdown("""
     <style>
-        /* Import premium fonts for English (Inter) and Arabic (Cairo) */
         @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap');
         
-        /* Global Typography */
         html, body, [class*="css"] {
             font-family: 'Inter', sans-serif;
         }
         
-        /* Enhance Text Areas (Inputs) for readability */
         textarea {
             font-family: 'Cairo', 'Inter', sans-serif !important;
-            font-size: 16px !important; /* Prevents auto-zoom on iPhones */
+            font-size: 16px !important;
             line-height: 1.6 !important;
             border-radius: 8px !important;
         }
         
-        /* GREEN PRIMARY BUTTONS (Load & Submit actions) */
         button[kind="primary"] {
-            background-color: #10B981 !important; /* Emerald Green */
+            background-color: #10B981 !important;
             border-color: #10B981 !important;
             color: white !important;
             font-size: 16px !important;
@@ -61,7 +56,6 @@ def apply_custom_css():
             transform: translateY(-2px);
         }
 
-        /* RED ACKNOWLEDGMENT BOX overrides */
         div[data-testid="stAlert"]:has(p:contains("CRITICAL STEP")) {
             background-color: #FEF2F2 !important;
             border: 1px solid #F87171 !important;
@@ -69,7 +63,6 @@ def apply_custom_css():
             border-radius: 8px !important;
         }
         
-        /* RED BUTTON for Acknowledgment (Uses advanced CSS selector) */
         button:has(p:contains("I have reviewed the final text")) {
             background-color: #EF4444 !important;
             border-color: #EF4444 !important;
@@ -84,7 +77,6 @@ def apply_custom_css():
             border-color: #DC2626 !important;
         }
         
-        /* General mobile padding adjustments */
         .block-container {
             padding-top: 2rem !important;
             padding-bottom: 2rem !important;
@@ -96,6 +88,8 @@ apply_custom_css()
 
 GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
 GLOSSARY_RANGE = "'المصطلحات'!C:D"
+SESSIONS_RANGE = "'Sessions'!A:D"
+LOCK_TIMEOUT_SECONDS = 14400  # 4 hours auto-expiration
 
 BATCH_SIZE = 6
 MAX_RETRIES_PER_MODEL = 3
@@ -115,7 +109,6 @@ def login_screen():
     st.title("🤝 12-Step AI Suite: Volunteer Portal")
     with st.form("login_form"):
         email = st.text_input("Enter your registered email address").strip().lower()
-        # Changed this to primary so it is green and inviting
         submitted = st.form_submit_button("Access Portal", type="primary")
 
         if submitted:
@@ -125,8 +118,6 @@ def login_screen():
                 st.session_state["user_email"] = email
                 st.session_state["user_role"] = volunteers[email]["role"]
                 st.session_state["user_name"] = volunteers[email]["name"]
-                
-                # Auto-assign app mode based on role
                 st.session_state["app_mode"] = "Translator Mode" if volunteers[email]["role"] == "translator" else "Reviewer Mode"
                 st.rerun()
             else:
@@ -143,6 +134,9 @@ if 'processed_data' not in st.session_state:
 if 'source_file_id' not in st.session_state:
     st.session_state['source_file_id'] = None
 
+if 'session_row_index' not in st.session_state:
+    st.session_state['session_row_index'] = None
+
 
 # ==========================================
 # 2. INITIALIZE GOOGLE & AI SERVICES
@@ -156,7 +150,7 @@ def get_google_services():
             scopes=[
                 'https://www.googleapis.com/auth/documents',
                 'https://www.googleapis.com/auth/drive',
-                'https://www.googleapis.com/auth/spreadsheets.readonly'
+                'https://www.googleapis.com/auth/spreadsheets'
             ]
         )
         docs_service = build('docs', 'v1', credentials=credentials, cache_discovery=False)
@@ -235,10 +229,89 @@ def get_fallback_models():
 
 
 # ==========================================
-# 3. HELPER FUNCTIONS & AI BATCH ENGINE
+# 3. HELPER FUNCTIONS, LOCKS & AI ENGINE
 # ==========================================
+def manage_document_lock(file_id: str, user_email: str):
+    """Inspects the Sessions sheet to block collisions or recover previous work."""
+    try:
+        sheet = sheets_service.spreadsheets()
+        result = sheet.values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
+        rows = result.get('values', [])
+        
+        current_time = time.time()
+        target_row_index = max(len(rows) + 1, 2)
+        
+        for index, row in enumerate(rows):
+            if index == 0:
+                continue
+            doc_id = row[0] if len(row) > 0 else ""
+            if doc_id == file_id:
+                target_row_index = index + 1
+                locked_by = row[1] if len(row) > 1 else ""
+                timestamp = float(row[2]) if (len(row) > 2 and row[2]) else 0
+                saved_json = row[3] if len(row) > 3 else ""
+                
+                # Active lock held by someone else
+                if locked_by and locked_by != user_email and (current_time - timestamp) < LOCK_TIMEOUT_SECONDS:
+                    return {"status": "blocked", "locked_by": locked_by, "row_index": target_row_index}
+                
+                # Previous session owned by current user
+                if locked_by == user_email and saved_json:
+                    try:
+                        recovered_data = json.loads(saved_json)
+                        return {"status": "recovered", "data": recovered_data, "row_index": target_row_index}
+                    except Exception:
+                        pass
+                
+                return {"status": "clear", "row_index": target_row_index}
+            
+            if not doc_id and target_row_index > len(rows):
+                target_row_index = index + 1
+                
+        return {"status": "clear", "row_index": target_row_index}
+    except Exception as e:
+        st.warning(f"Locking check note: {e}")
+        return {"status": "clear", "row_index": 2}
+
+def save_draft_to_sheet(file_id: str, user_email: str, row_index: int, processed_data: list):
+    """Silently updates the backup row in Google Sheets."""
+    if not row_index:
+        return
+    try:
+        sheet = sheets_service.spreadsheets()
+        json_data = json.dumps(processed_data, ensure_ascii=False)
+        timestamp = str(time.time())
+        
+        body = {'values': [[file_id, user_email, timestamp, json_data]]}
+        range_name = f"'Sessions'!A{row_index}:D{row_index}"
+        
+        sheet.values().update(
+            spreadsheetId=GLOSSARY_SPREADSHEET_ID,
+            range=range_name,
+            valueInputOption="USER_ENTERED",
+            body=body
+        ).execute()
+    except Exception:
+        pass
+
+def release_document_lock(row_index: int):
+    """Clears the lock row once work is successfully pushed."""
+    if not row_index:
+        return
+    try:
+        sheet = sheets_service.spreadsheets()
+        body = {'values': [["", "", "", ""]]}
+        range_name = f"'Sessions'!A{row_index}:D{row_index}"
+        sheet.values().update(
+            spreadsheetId=GLOSSARY_SPREADSHEET_ID,
+            range=range_name,
+            valueInputOption="USER_ENTERED",
+            body=body
+        ).execute()
+    except Exception:
+        pass
+
 def send_email_notification(process_name: str, operator_name: str, operator_email: str):
-    """Sends a completion notification to both the volunteer and the admin."""
     try:
         sender_email = st.secrets["SMTP_EMAIL"]
         sender_password = st.secrets["SMTP_PASSWORD"]
@@ -282,7 +355,6 @@ def generate_html_diff(original: str, suggested: str) -> str:
         return "<div dir='rtl' style='font-family: \"Cairo\", sans-serif; color: #155724; background-color: #d4edda; padding: 10px; border-radius: 5px; text-align: right;'>✨ لا توجد تعديلات (Perfect Match)</div>"
     
     diff = difflib.ndiff(original.split(), suggested.split())
-    # Upgraded fonts for diff visualizer
     html = ["<div dir='rtl' style='font-family: \"Cairo\", sans-serif; line-height: 2; font-size: 18px; text-align: right; background-color: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #e9ecef;'>"]
     
     for word in diff:
@@ -325,7 +397,6 @@ def _call_gemini(model_name: str, prompt: str, schema_type):
         clean_text = match.group(0)
     return json.loads(clean_text)
 
-# --- SINGLE ITEM AI CALLS (THE FAILSAFES) ---
 def translate_with_ai(english: str, glossary_text: str):
     prompt = f"""You are an expert bilingual translator specializing in 12-step recovery literature. 
 Translate the English text into Arabic accurately, ensuring the tone remains clinical, professional, and non-moralizing.
@@ -353,7 +424,7 @@ English Source: "{english}"
                     _backoff_sleep(attempt)
                     continue
                 break
-    return {"arabic_translation": "", "glossary_notes": f"⚠️ Fallback Error."}
+    return {"arabic_translation": "", "glossary_notes": "⚠️ Fallback Error."}
 
 def review_with_ai(english: str, arabic: str, glossary_text: str):
     prompt = f"""You are an expert bilingual editor specializing in 12-step recovery literature. 
@@ -385,9 +456,8 @@ If the translation captures meaning and tone accurately, leave it as is. If it m
                     _backoff_sleep(attempt)
                     continue
                 break
-    return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": f"⚠️ Fallback Error."}
+    return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "⚠️ Fallback Error."}
 
-# --- MICRO-BATCH AI CALLS & AUTO-CORRECT CASCADE ---
 def translate_batch_with_fallback(batch_segments, glossary_text):
     if not GENAI_AVAILABLE or client is None:
         return [translate_with_ai(seg['english'], glossary_text) for seg in batch_segments]
@@ -398,10 +468,10 @@ def translate_batch_with_fallback(batch_segments, glossary_text):
 Translate the following English segments into Arabic accurately. Ensure the tone remains clinical, professional, and non-moralizing.
 
 CRITICAL INSTRUCTIONS FOR THIS BATCH:
-1. Narrative Flow: These segments are sequential parts of a single document. Maintain consistent grammatical gender, tone, and pronoun references across all segments.
-2. Contextual Nuance: Do not perform blind word-for-word replacements. Actively understand the semantic meaning.
-3. Pronoun Resolution: When English pronouns like "it" or "we" appear (e.g., "it works", "we admitted"), ensure the Arabic translation reflects the correct contextual noun (e.g., "the program", "the fellowship") and its proper Arabic grammatical gender.
-4. Glossary Integration: Apply the glossary terms naturally into the sentence flow without forcing them if the grammar breaks.
+1. Narrative Flow: Maintain consistent grammatical gender, tone, and pronoun references across all segments.
+2. Contextual Nuance: Actively understand the semantic meaning.
+3. Pronoun Resolution: Reflect the correct contextual noun and proper Arabic grammatical gender.
+4. Glossary Integration: Apply glossary terms naturally.
 
 GLOSSARY TERMS:
 {glossary_text}
@@ -443,9 +513,9 @@ def review_batch_with_fallback(batch_segments, glossary_text):
 Review the following English/Arabic pairs for accuracy, tone, and glossary adherence. Ensure the tone remains clinical, professional, and non-moralizing.
 
 CRITICAL INSTRUCTIONS FOR THIS BATCH:
-1. Narrative Flow: These segments are sequential parts of a single document. Maintain consistent grammatical gender, tone, and pronoun references across all segments.
-2. Contextual Nuance: Do not perform blind word-for-word replacements. Actively understand the semantic meaning.
-3. Glossary Integration: Respect recovery glossary terms. If the existing Arabic translation captures the meaning and tone accurately, leave it as is. If it misses glossary nuance or sounds unnatural, provide the polished Arabic translation.
+1. Narrative Flow: Maintain consistent grammatical gender, tone, and pronoun references across all segments.
+2. Contextual Nuance: Actively understand the semantic meaning.
+3. Glossary Integration: Respect recovery glossary terms. If the translation is accurate, keep it. If not, provide the polished text.
 
 GLOSSARY TERMS:
 {glossary_text}
@@ -477,6 +547,7 @@ Pairs to Review:
             "reasoning": single_res['reasoning']
         })
     return results
+
 
 # ==========================================
 # 4. DOCUMENT PARSERS & ANOMALY DETECTOR
@@ -538,7 +609,6 @@ def extract_text_from_drive(file_id: str, is_retry=False):
                 all_paras.extend(sweep_doc_obj(document))
 
             return all_paras
-
         else:
             st.error(f"Unsupported file type: {mime_type}. Please use Google Docs.")
             return None
@@ -584,6 +654,7 @@ def smart_align_with_anomaly_detection(paragraphs: list):
             'anomaly': anomaly_msg
         })
     return aligned_segments
+
 
 # ==========================================
 # 5. GOOGLE DOCS WRITE-BACK FUNCTIONS
@@ -631,6 +702,7 @@ def push_to_drive_reviewer(document_id, approved_segments):
         st.error(f"Failed to push to Drive. Ensure the Service Account has 'Editor' access. Error: {e}")
         return False
 
+
 # ==========================================
 # 6. DASHBOARD UI & INGESTION
 # ==========================================
@@ -658,7 +730,7 @@ with st.container(border=True):
 
     with col_info:
         st.markdown("### 📊 System Status")
-        st.caption("⚡ **Engine:** `Micro-Batching Enabled`")
+        st.caption("⚡ **Engine:** `Micro-Batching & Session Guard Active`")
         if "No glossary" not in glossary_data and glossary_data != "":
             st.success(f"✅ **Glossary Connected:**\n`{GLOSSARY_RANGE.split('!')[0]}`")
         else:
@@ -669,78 +741,112 @@ st.divider()
 st.markdown("### ☁️ Process Google Drive Document")
 doc_url = st.text_input("Paste Google Docs File URL Here:")
 
-# Primary button gets customized to Green via CSS
 if st.button("Load & Process Document", type="primary") and doc_url:
     file_id = extract_id(doc_url)
     if file_id:
         st.session_state['source_file_id'] = file_id
-        st.info(f"Connecting to Document ID: {file_id}...")
-        paras = extract_text_from_drive(file_id)
-
-        if paras:
-            if st.session_state["app_mode"] == "Translator Mode":
-                st.info(f"Extracted {len(paras)} segments. Translating via AI Batching...")
-                progress_bar = st.progress(0)
-                processed_results = []
-                
-                batches = [paras[i:i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
-                for idx, batch in enumerate(batches):
-                    batch_payload = [{'id': j + 1, 'english': p['text']} for j, p in enumerate(batch)]
-                    ai_results = translate_batch_with_fallback(batch_payload, glossary_data)
-                    for ai_res in ai_results:
-                        processed_results.append({
-                            "id": ai_res['id'] + (idx * BATCH_SIZE),
-                            "english": batch[ai_res['id'] - 1]['text'],
-                            "arabic_translation": ai_res.get("arabic_translation", ""),
-                            "glossary_notes": ai_res.get("glossary_notes", "")
-                        })
-                    progress_bar.progress((idx + 1) / len(batches))
-                    
-            else:
-                segments = smart_align_with_anomaly_detection(paras)
-                st.info(f"Extracted blocks. Aligning and Reviewing via AI Batching...")
-                progress_bar = st.progress(0)
-                processed_results = []
-                
-                normal_segs = [s for s in segments if s['status'] == 'normal']
-                batches = [normal_segs[i:i + BATCH_SIZE] for i in range(0, len(normal_segs), BATCH_SIZE)]
-                
-                for idx, batch in enumerate(batches):
-                    ai_results = review_batch_with_fallback(batch, glossary_data)
-                    for ai_res, original_seg in zip(ai_results, batch):
-                        processed_results.append({
-                            "id": original_seg['id'],
-                            "status": ai_res.get('status', 'minor_edits'),
-                            "english": original_seg['english'],
-                            "original_arabic": original_seg['arabic'],
-                            "suggested_arabic": ai_res.get("suggested_arabic", original_seg['arabic']),
-                            "reasoning": ai_res.get("reasoning", ""),
-                            "anomaly": original_seg['anomaly'],
-                            "ar_start": original_seg['ar_start'],
-                            "ar_end": original_seg['ar_end']
-                        })
-                    progress_bar.progress((idx + 1) / len(batches))
-                    
-                for item in segments:
-                    if item['status'] == 'misaligned_en':
-                        trans_res = translate_with_ai(item['english'], glossary_data)
-                        processed_results.append({
-                            "id": item['id'], "status": "major_rewrite", "english": item['english'],
-                            "original_arabic": "[MISSING]", "suggested_arabic": trans_res.get("arabic_translation", ""),
-                            "reasoning": "⚠️ Auto-translated orphaned English.", "anomaly": item['anomaly'],
-                            "ar_start": None, "ar_end": None
-                        })
-                    elif item['status'] == 'misaligned_ar':
-                        processed_results.append({
-                            "id": item['id'], "status": "major_rewrite", "english": "[MISSING]",
-                            "original_arabic": item['arabic'], "suggested_arabic": item['arabic'],
-                            "reasoning": "⚠️ Orphaned Arabic. Ignored.", "anomaly": item['anomaly'],
-                            "ar_start": item['ar_start'], "ar_end": item['ar_end']
-                        })
-                        
-                processed_results.sort(key=lambda x: x['id'])
-            st.session_state['processed_data'] = processed_results
+        
+        # --- INVISIBLE SAFETY CHECK: COLLISION & RECOVERY ---
+        lock_status = manage_document_lock(file_id, st.session_state['user_email'])
+        
+        if lock_status["status"] == "blocked":
+            st.error(f"🛑 **Document In Use:** This document is currently being worked on by `{lock_status['locked_by']}`. Please coordinate before opening.")
+            st.stop()
+            
+        elif lock_status["status"] == "recovered":
+            st.session_state['session_row_index'] = lock_status["row_index"]
+            st.session_state['processed_data'] = lock_status["data"]
+            st.success("♻️ **Session Recovered:** Restored your previously saved work and progress.")
+            time.sleep(0.5)
             st.rerun()
+            
+        elif lock_status["status"] == "clear":
+            st.session_state['session_row_index'] = lock_status["row_index"]
+            st.info(f"Connecting to Document ID: {file_id}...")
+            paras = extract_text_from_drive(file_id)
+
+            if paras:
+                if st.session_state["app_mode"] == "Translator Mode":
+                    st.info(f"Extracted {len(paras)} segments. Translating via AI Batching...")
+                    progress_bar = st.progress(0)
+                    processed_results = []
+                    
+                    batches = [paras[i:i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
+                    for idx, batch in enumerate(batches):
+                        batch_payload = [{'id': j + 1, 'english': p['text']} for j, p in enumerate(batch)]
+                        ai_results = translate_batch_with_fallback(batch_payload, glossary_data)
+                        for ai_res in ai_results:
+                            processed_results.append({
+                                "id": ai_res['id'] + (idx * BATCH_SIZE),
+                                "english": batch[ai_res['id'] - 1]['text'],
+                                "arabic_translation": ai_res.get("arabic_translation", ""),
+                                "glossary_notes": ai_res.get("glossary_notes", ""),
+                                "user_arabic": ai_res.get("arabic_translation", ""),
+                                "is_approved": True
+                            })
+                        progress_bar.progress((idx + 1) / len(batches))
+                        
+                else:
+                    segments = smart_align_with_anomaly_detection(paras)
+                    st.info("Extracted blocks. Aligning and Reviewing via AI Batching...")
+                    progress_bar = st.progress(0)
+                    processed_results = []
+                    
+                    normal_segs = [s for s in segments if s['status'] == 'normal']
+                    batches = [normal_segs[i:i + BATCH_SIZE] for i in range(0, len(normal_segs), BATCH_SIZE)]
+                    
+                    for idx, batch in enumerate(batches):
+                        ai_results = review_batch_with_fallback(batch, glossary_data)
+                        for ai_res, original_seg in zip(ai_results, batch):
+                            suggested = ai_res.get("suggested_arabic", original_seg['arabic'])
+                            status_val = ai_res.get('status', 'minor_edits')
+                            processed_results.append({
+                                "id": original_seg['id'],
+                                "status": status_val,
+                                "english": original_seg['english'],
+                                "original_arabic": original_seg['arabic'],
+                                "suggested_arabic": suggested,
+                                "reasoning": ai_res.get("reasoning", ""),
+                                "anomaly": original_seg['anomaly'],
+                                "ar_start": original_seg['ar_start'],
+                                "ar_end": original_seg['ar_end'],
+                                "user_arabic": suggested,
+                                "is_approved": (status_val == 'perfect')
+                            })
+                        progress_bar.progress((idx + 1) / len(batches))
+                        
+                    for item in segments:
+                        if item['status'] == 'misaligned_en':
+                            trans_res = translate_with_ai(item['english'], glossary_data)
+                            t_arabic = trans_res.get("arabic_translation", "")
+                            processed_results.append({
+                                "id": item['id'], "status": "major_rewrite", "english": item['english'],
+                                "original_arabic": "[MISSING]", "suggested_arabic": t_arabic,
+                                "reasoning": "⚠️ Auto-translated orphaned English.", "anomaly": item['anomaly'],
+                                "ar_start": None, "ar_end": None,
+                                "user_arabic": t_arabic, "is_approved": False
+                            })
+                        elif item['status'] == 'misaligned_ar':
+                            processed_results.append({
+                                "id": item['id'], "status": "major_rewrite", "english": "[MISSING]",
+                                "original_arabic": item['arabic'], "suggested_arabic": item['arabic'],
+                                "reasoning": "⚠️ Orphaned Arabic. Ignored.", "anomaly": item['anomaly'],
+                                "ar_start": item['ar_start'], "ar_end": item['ar_end'],
+                                "user_arabic": item['arabic'], "is_approved": False
+                            })
+                            
+                    processed_results.sort(key=lambda x: x['id'])
+                
+                # Silent initial lock registration
+                save_draft_to_sheet(
+                    file_id, 
+                    st.session_state['user_email'], 
+                    st.session_state['session_row_index'], 
+                    processed_results
+                )
+                st.session_state['processed_data'] = processed_results
+                st.rerun()
+
 
 # ==========================================
 # 7. DYNAMIC OUTPUT GRID & PUSH ACTION
@@ -749,6 +855,7 @@ if st.session_state['processed_data']:
     st.divider()
     approved_count = 0
     finalized_data = []
+    state_modified = False
 
     if st.session_state["app_mode"] == "Translator Mode":
         st.subheader("Translation Editor")
@@ -761,9 +868,25 @@ if st.session_state['processed_data']:
                     with st.expander("💡 AI Glossary Notes"):
                         st.caption(item['glossary_notes'])
                 with col_ar:
-                    final_text = st.text_area("Final Translation", value=item['arabic_translation'], height=120, key=f"edit_ar_{i}", label_visibility="collapsed")
-                
-                if st.checkbox(f"✅ Approve Segment {item['id']}", key=f"approve_{i}", value=True):
+                    default_text = item.get('user_arabic', item['arabic_translation'])
+                    final_text = st.text_area(
+                        "Final Translation", 
+                        value=default_text, 
+                        height=120, 
+                        key=f"edit_ar_{i}", 
+                        label_visibility="collapsed"
+                    )
+                    if final_text != item.get('user_arabic'):
+                        item['user_arabic'] = final_text
+                        state_modified = True
+
+                default_approval = item.get('is_approved', True)
+                is_approved = st.checkbox(f"✅ Approve Segment {item['id']}", key=f"approve_{i}", value=default_approval)
+                if is_approved != item.get('is_approved'):
+                    item['is_approved'] = is_approved
+                    state_modified = True
+
+                if is_approved:
                     approved_count += 1
                     finalized_data.append(final_text)
 
@@ -774,16 +897,48 @@ if st.session_state['processed_data']:
             with st.container(border=True):
                 st.markdown(f"### Segment {item['id']} | Status: {color} {item['status'].upper()}")
                 col_en, col_ar = st.columns(2)
-                with col_en: st.info(item['english'])
+                with col_en: 
+                    st.info(item['english'])
                 with col_ar:
                     diff_html = generate_html_diff(item['original_arabic'], item['suggested_arabic'])
                     st.markdown(diff_html, unsafe_allow_html=True)
-                    with st.expander("💡 View AI Reasoning"): st.markdown(item['reasoning'])
-                    final_text = st.text_area("Final Output", value=item['suggested_arabic'], height=120, key=f"edit_ar_{i}", label_visibility="collapsed")
+                    with st.expander("💡 View AI Reasoning"): 
+                        st.markdown(item['reasoning'])
+                    
+                    default_text = item.get('user_arabic', item['suggested_arabic'])
+                    final_text = st.text_area(
+                        "Final Output", 
+                        value=default_text, 
+                        height=120, 
+                        key=f"edit_ar_{i}", 
+                        label_visibility="collapsed"
+                    )
+                    if final_text != item.get('user_arabic'):
+                        item['user_arabic'] = final_text
+                        state_modified = True
                 
-                if st.checkbox(f"✅ Approve Segment {item['id']}", key=f"approve_{i}", value=(item['status'] == 'perfect')):
+                default_approval = item.get('is_approved', (item['status'] == 'perfect'))
+                is_approved = st.checkbox(f"✅ Approve Segment {item['id']}", key=f"approve_{i}", value=default_approval)
+                if is_approved != item.get('is_approved'):
+                    item['is_approved'] = is_approved
+                    state_modified = True
+
+                if is_approved:
                     approved_count += 1
-                    finalized_data.append({'final_arabic': final_text, 'ar_start': item.get('ar_start'), 'ar_end': item.get('ar_end')})
+                    finalized_data.append({
+                        'final_arabic': final_text, 
+                        'ar_start': item.get('ar_start'), 
+                        'ar_end': item.get('ar_end')
+                    })
+
+    # Trigger background auto-save whenever edits or approvals change
+    if state_modified and st.session_state.get('session_row_index'):
+        save_draft_to_sheet(
+            st.session_state['source_file_id'],
+            st.session_state['user_email'],
+            st.session_state['session_row_index'],
+            st.session_state['processed_data']
+        )
 
     # --- COMPILED EXPORT & PUSH BUTTON ---
     total_segments = len(st.session_state['processed_data'])
@@ -793,14 +948,12 @@ if st.session_state['processed_data']:
     if approved_count == total_segments and total_segments > 0:
         st.success("🎉 All segments approved! Final review before pushing.")
 
-        # 1. Compile the full text for both languages
         full_english = "\n\n".join([item['english'] for item in st.session_state['processed_data']])
         if st.session_state["app_mode"] == "Translator Mode":
             full_arabic = "\n\n".join(finalized_data)
         else:
             full_arabic = "\n\n".join([item['final_arabic'] for item in finalized_data])
 
-        # 2. Render side-by-side preview boxes using custom HTML for premium readability
         st.markdown("### 🔍 Final Full-Text Review")
         col_preview_en, col_preview_ar = st.columns(2)
         
@@ -812,7 +965,6 @@ if st.session_state['processed_data']:
             """, unsafe_allow_html=True)
             
         with col_preview_ar:
-            # Custom RTL div using the Cairo font (much better than st.text_area)
             st.markdown(f"""
             <div dir="rtl" style="height: 350px; overflow-y: auto; padding: 15px; background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; font-family: 'Cairo', sans-serif; font-size: 18px; line-height: 1.8; white-space: pre-wrap; color: #0F172A; text-align: right;">
             {full_arabic}
@@ -824,18 +976,15 @@ if st.session_state['processed_data']:
 
         st.divider()
 
-        # 3. The Two-Step Reveal (With Eye-Catching Red Box)
         if "review_unlocked" not in st.session_state:
             st.session_state["review_unlocked"] = False
 
         if not st.session_state["review_unlocked"]:
-            # Step 1: The Acknowledgment Box (Red) & Button (Red)
             st.error("🚨 **CRITICAL STEP:** Please give the final text a quick read to ensure the narrative flows naturally and respects the glossary.")
             if st.button("👀 I have reviewed the final text and it looks good", use_container_width=True):
                 st.session_state["review_unlocked"] = True
                 st.rerun()
         else:
-            # Step 2: The Actual Push Buttons (Revealed, styled Green via CSS)
             if st.session_state["app_mode"] == "Translator Mode":
                 if st.session_state.get('source_file_id'):
                     if st.button("🚀 Push Translation to Google Doc", type="primary", use_container_width=True):
@@ -843,9 +992,11 @@ if st.session_state['processed_data']:
                             success = push_to_drive_translator(st.session_state['source_file_id'], full_arabic)
                             if success:
                                 send_email_notification("Translation", operator_name, operator_email)
-                                st.session_state["review_unlocked"] = False # Reset for next time
+                                release_document_lock(st.session_state.get('session_row_index'))
+                                st.session_state["review_unlocked"] = False
+                                st.session_state["processed_data"] = None
                                 st.balloons()
-                                st.success("Translation pushed successfully and receipt sent to your inbox!")
+                                st.success("Translation pushed successfully and lock released!")
             else:
                 if st.session_state.get('source_file_id'):
                     if st.button("🚀 Apply Revisions to Google Doc", type="primary", use_container_width=True):
@@ -853,6 +1004,8 @@ if st.session_state['processed_data']:
                             success = push_to_drive_reviewer(st.session_state['source_file_id'], finalized_data)
                             if success:
                                 send_email_notification("Review", operator_name, operator_email)
-                                st.session_state["review_unlocked"] = False # Reset for next time
+                                release_document_lock(st.session_state.get('session_row_index'))
+                                st.session_state["review_unlocked"] = False
+                                st.session_state["processed_data"] = None
                                 st.balloons()
-                                st.success("Revisions applied successfully and receipt sent to your inbox!")
+                                st.success("Revisions applied successfully and lock released!")
