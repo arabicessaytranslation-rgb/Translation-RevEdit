@@ -306,41 +306,35 @@ if st.session_state.get("app_mode") == "God Mode":
             res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_RANGE).execute()
             glos_data = res.get('values', [])
             
-            # If the sheet is completely empty, provide default headers and a blank row
-            if not glos_data or len(glos_data) == 0:
-                glos_data = [["ID", "Category", "English", "Arabic"], ["1", "General", "", ""]]
-                
-            headers = glos_data[0]
-            seen = {}
-            unique_headers = []
-            for idx, h in enumerate(headers):
-                h_str = str(h).strip()
-                if not h_str:
-                    h_str = f"Column_{idx+1}"
-                if h_str in seen:
-                    seen[h_str] += 1
-                    h_str = f"{h_str}_{seen[h_str]}"
-                else:
-                    seen[h_str] = 0
-                unique_headers.append(h_str)
-                
-            glos_data[0] = unique_headers
+            # Explicit default headers
+            headers = ["ID", "Category", "English", "Arabic"]
             
-            max_cols = len(unique_headers)
-            padded_rows = []
-            for row in glos_data[1:]:
-                row.extend([""] * (max_cols - len(row)))
-                padded_rows.append(row)
+            # If data exists, check if the first row looks like headers or data
+            rows_to_display = []
+            if glos_data and len(glos_data) > 0:
+                # If first row matches our header count, use it as headers
+                if len(glos_data[0]) == 4 and not glos_data[0][0].isdigit():
+                    headers = [str(h).strip() for h in glos_data[0]]
+                    rows_to_display = glos_data[1:]
+                else:
+                    rows_to_display = glos_data
+            
+            # Ensure rows have exactly 4 columns
+            cleaned_rows = []
+            for row in rows_to_display:
+                # Pad or truncate row to match 4 columns
+                padded = list(row) + [""] * (4 - len(row))
+                cleaned_rows.append(padded[:4])
                 
-            # Fallback if there are no data rows yet
-            if not padded_rows:
-                padded_rows = [[""] * max_cols]
+            if not cleaned_rows:
+                cleaned_rows = [["1", "General", "", ""]]
                 
-            df_glos = pd.DataFrame(padded_rows, columns=unique_headers)
+            df_glos = pd.DataFrame(cleaned_rows, columns=headers)
             edited_glos = st.data_editor(df_glos, num_rows="dynamic", use_container_width=True)
             
             if st.button("💾 Sync Glossary to AI", type="primary"):
                 clean_df = edited_glos.fillna("")
+                # Include headers as the first row of the matrix when writing back
                 updated_matrix = [clean_df.columns.tolist()] + clean_df.values.tolist()
                 overwrite_sheet_data(GLOSSARY_RANGE, updated_matrix)
                 st.success("Glossary synced successfully!")
