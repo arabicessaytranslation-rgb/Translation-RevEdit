@@ -270,7 +270,9 @@ if st.session_state.get("app_mode") == "God Mode":
             edited_vol = st.data_editor(df_vol, num_rows="dynamic", use_container_width=True)
             
             if st.button("💾 Save Volunteers to Database", type="primary"):
-                updated_matrix = [edited_vol.columns.tolist()] + edited_vol.values.tolist()
+                # .fillna("") fixes the Segmentation Fault bug caused by null values
+                clean_df = edited_vol.fillna("")
+                updated_matrix = [clean_df.columns.tolist()] + clean_df.values.tolist()
                 overwrite_sheet_data(VOLUNTEERS_RANGE, updated_matrix)
                 st.success("Volunteers database updated securely!")
         except Exception as e:
@@ -294,7 +296,9 @@ if st.session_state.get("app_mode") == "God Mode":
             edited_glos = st.data_editor(df_glos, num_rows="dynamic", use_container_width=True)
             
             if st.button("💾 Sync Glossary to AI", type="primary"):
-                updated_matrix = [edited_glos.columns.tolist()] + edited_glos.values.tolist()
+                # .fillna("") fixes the Segmentation Fault bug caused by null values
+                clean_df = edited_glos.fillna("")
+                updated_matrix = [clean_df.columns.tolist()] + clean_df.values.tolist()
                 overwrite_sheet_data(GLOSSARY_RANGE, updated_matrix)
                 st.success("Glossary synced successfully!")
                 st.cache_data.clear() # Clears local cache to force fresh pull for AI
@@ -568,7 +572,7 @@ English Source: "{english}"
                     _backoff_sleep(attempt)
                     continue
                 break
-    return {"arabic_translation": "", "glossary_notes": "⚠️️ Fallback Error."}
+    return {"arabic_translation": "", "glossary_notes": "⚠ Fallback Error."}
 
 def review_with_ai(english: str, arabic: str, glossary_text: str):
     prompt = f"""You are an expert bilingual editor specializing in 12-step recovery literature. 
@@ -597,7 +601,7 @@ If the translation captures meaning and tone accurately, leave it as is. If it m
                     _backoff_sleep(attempt)
                     continue
                 break
-    return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "⚠️ Fallback Error."}
+    return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "⚠️️ Fallback Error."}
 
 def translate_batch_with_fallback(batch_segments, glossary_text):
     if not GENAI_AVAILABLE or client is None:
@@ -868,7 +872,7 @@ if st.button("Load & Process Document", type="primary") and doc_url:
                                 "arabic_translation": ai_res.get("arabic_translation", ""),
                                 "glossary_notes": ai_res.get("glossary_notes", ""),
                                 "user_arabic": ai_res.get("arabic_translation", ""),
-                                "is_approved": False  # Checkboxes now strictly default to False
+                                "is_approved": False  # Defaults strictly to False
                             })
                         progress_bar.progress((idx + 1) / len(batches))
                         
@@ -944,7 +948,6 @@ if st.session_state['processed_data']:
                 
                 with col_en:
                     st.info(item['english'])
-                    # Glossary notes now directly visible without expanding
                     if item.get('glossary_notes'):
                         st.markdown("💡 **Glossary Notes:**")
                         st.caption(item['glossary_notes'])
