@@ -305,45 +305,57 @@ if st.session_state.get("app_mode") == "God Mode":
         except Exception as e:
             st.error(f"Error loading glossary: {e}")
 
-    # --- TAB 4: MASTER PIPELINE ---
+   # --- TAB 4: MASTER PIPELINE ---
     with tab4:
         st.subheader("Google Drive Folder Scanner")
-        st.caption("Paste a specific Google Drive Folder URL to see all documents inside it.")
+        st.caption("Select a folder to view all documents currently inside it.")
         
-        folder_url = st.text_input("📁 Target Folder URL:", placeholder="https://drive.google.com/drive/folders/...")
-        
-        if st.button("🔄 Scan Folder", type="primary"):
-            if folder_url:
-                folder_id = extract_id(folder_url)
-                if folder_id:
-                    with st.spinner(f"Scanning folder {folder_id}..."):
-                        try:
-                            # Query specifically looks INSIDE the targeted folder
-                            query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false"
-                            results = drive_service.files().list(
-                                q=query, 
-                                pageSize=50, 
-                                fields="files(id, name, modifiedTime)", 
-                                orderBy="modifiedTime desc"
-                            ).execute()
-                            
-                            files = results.get('files', [])
-                            
-                            if files:
-                                st.success(f"Found {len(files)} documents in this folder.")
-                                for f in files:
-                                    # Format the modified time cleanly
-                                    mod_time = f.get('modifiedTime', '')[:10] 
-                                    st.markdown(f"📄 **{f['name']}** *(Last modified: {mod_time})*  \n`ID: {f['id']}` — [Open in Google Docs](https://docs.google.com/document/d/{f['id']})")
-                            else:
-                                st.warning("No Google Docs found in this folder. (Ensure the folder is shared with the Service Account!)")
-                        except Exception as e:
-                            st.error(f"Drive API error. Are you sure the Service Account has access to this folder? Error: {e}")
-                else:
-                    st.error("Could not extract a valid Folder ID from the URL.")
+        try:
+            # 1. Dynamically fetch all folders shared with the Service Account
+            folder_query = "mimeType='application/vnd.google-apps.folder' and trashed=false"
+            folder_results = drive_service.files().list(
+                q=folder_query, 
+                pageSize=50, 
+                fields="files(id, name)", 
+                orderBy="name"
+            ).execute()
+            
+            folders = folder_results.get('files', [])
+            
+            if folders:
+                # Build a dictionary to map the display name to the actual Folder ID
+                folder_options = {f"📁 {f['name']}": f['id'] for f in folders}
+                
+                # 2. Render the selection list
+                selected_folder_name = st.selectbox("Select Target Folder:", options=list(folder_options.keys()))
+                
+                if st.button("🔄 Scan Selected Folder", type="primary"):
+                    folder_id = folder_options[selected_folder_name]
+                    
+                    with st.spinner(f"Scanning {selected_folder_name}..."):
+                        # 3. Query documents specifically inside the selected folder
+                        doc_query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false"
+                        doc_results = drive_service.files().list(
+                            q=doc_query, 
+                            pageSize=50, 
+                            fields="files(id, name, modifiedTime)", 
+                            orderBy="modifiedTime desc"
+                        ).execute()
+                        
+                        files = doc_results.get('files', [])
+                        
+                        if files:
+                            st.success(f"Found {len(files)} documents in this folder.")
+                            for f in files:
+                                mod_time = f.get('modifiedTime', '')[:10] 
+                                st.markdown(f"📄 **{f['name']}** *(Last modified: {mod_time})*  \n`ID: {f['id']}` — [Open in Google Docs](https://docs.google.com/document/d/{f['id']})")
+                        else:
+                            st.warning("No Google Docs found inside this specific folder.")
             else:
-                st.info("Please enter a folder URL first.")
-
+                st.info("No folders found. Please share your project folders with the Service Account email in Google Drive.")
+                
+        except Exception as e:
+            st.error(f"Drive API error: {e}")
     # --- TAB 5: BROADCAST DESK ---
     with tab5:
         st.subheader("Team Broadcast System")
