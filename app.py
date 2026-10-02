@@ -717,15 +717,13 @@ if st.session_state['processed_data']:
     st.write(f"### **Approved Segments: {approved_count} / {total_segments}**")
 
     if approved_count == total_segments and total_segments > 0:
-        st.success("🎉 All segments approved! Final review before pushing to Google Docs.")
+        st.success("🎉 All segments approved! Final review before pushing.")
 
         # 1. Compile the full text for both languages
         full_english = "\n\n".join([item['english'] for item in st.session_state['processed_data']])
-        
         if st.session_state["app_mode"] == "Translator Mode":
             full_arabic = "\n\n".join(finalized_data)
         else:
-            # Editors store data as dictionaries, so we extract the 'final_arabic' text
             full_arabic = "\n\n".join([item['final_arabic'] for item in finalized_data])
 
         # 2. Render side-by-side preview boxes
@@ -736,25 +734,38 @@ if st.session_state['processed_data']:
         with col_preview_ar:
             st.text_area("Full Compiled Output (Arabic)", value=full_arabic, height=400, disabled=True)
 
-        # Automatically pull operator details from login session
         operator_name = st.session_state["user_name"]
         operator_email = st.session_state["user_email"]
-        
-        if st.session_state["app_mode"] == "Translator Mode":
-            if st.session_state.get('source_file_id'):
-                if st.button("🚀 Push Translation to Google Doc", type="primary", use_container_width=True):
-                    with st.spinner("Pushing to Drive..."):
-                        success = push_to_drive_translator(st.session_state['source_file_id'], full_arabic)
-                        if success:
-                            send_email_notification("Translation", operator_name, operator_email)
-                            st.balloons()
-                            st.success("Translation pushed successfully and receipt sent to your inbox!")
+
+        # 3. The Two-Step Reveal
+        if "review_unlocked" not in st.session_state:
+            st.session_state["review_unlocked"] = False
+
+        if not st.session_state["review_unlocked"]:
+            # Step 1: The Acknowledgment Button
+            st.info("Please give the final text a quick read to ensure the narrative flows naturally.")
+            if st.button("👀 I have reviewed the final text and it looks good", use_container_width=True):
+                st.session_state["review_unlocked"] = True
+                st.rerun()
         else:
-            if st.session_state.get('source_file_id'):
-                if st.button("🚀 Apply Revisions to Google Doc", type="primary", use_container_width=True):
-                    with st.spinner("Rewriting Document..."):
-                        success = push_to_drive_reviewer(st.session_state['source_file_id'], finalized_data)
-                        if success:
-                            send_email_notification("Review", operator_name, operator_email)
-                            st.balloons()
-                            st.success("Revisions applied successfully and receipt sent to your inbox!")
+            # Step 2: The Actual Push Buttons (Revealed)
+            if st.session_state["app_mode"] == "Translator Mode":
+                if st.session_state.get('source_file_id'):
+                    if st.button("🚀 Push Translation to Google Doc", type="primary", use_container_width=True):
+                        with st.spinner("Pushing to Drive..."):
+                            success = push_to_drive_translator(st.session_state['source_file_id'], full_arabic)
+                            if success:
+                                send_email_notification("Translation", operator_name, operator_email)
+                                st.session_state["review_unlocked"] = False # Reset for next time
+                                st.balloons()
+                                st.success("Translation pushed successfully and receipt sent to your inbox!")
+            else:
+                if st.session_state.get('source_file_id'):
+                    if st.button("🚀 Apply Revisions to Google Doc", type="primary", use_container_width=True):
+                        with st.spinner("Rewriting Document..."):
+                            success = push_to_drive_reviewer(st.session_state['source_file_id'], finalized_data)
+                            if success:
+                                send_email_notification("Review", operator_name, operator_email)
+                                st.session_state["review_unlocked"] = False # Reset for next time
+                                st.balloons()
+                                st.success("Revisions applied successfully and receipt sent to your inbox!")
