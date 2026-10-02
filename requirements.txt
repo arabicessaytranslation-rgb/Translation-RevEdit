@@ -1,9 +1,8 @@
 streamlit
-google-genai
-pymupdf
-python-docx
+pandas
+pyarrow==14.0.2
 google-api-python-client
-google-auth
+google-auth-httplib2
 google-auth-oauthlib
 pydantic
-pandas
+google-genai
