@@ -1,6 +1,5 @@
 streamlit
 pandas
-pyarrow==14.0.2
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
