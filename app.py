@@ -19,9 +19,80 @@ except ImportError:
     GENAI_AVAILABLE = False
 
 # ==========================================
-# 1. CONFIGURATION & SECRETS
+# 1. CONFIGURATION, SECRETS & CUSTOM CSS
 # ==========================================
 st.set_page_config(page_title="12-Step AI Suite: Translate & Review", layout="wide")
+
+# --- CUSTOM CSS FOR UI/UX BEST PRACTICES ---
+def apply_custom_css():
+    st.markdown("""
+    <style>
+        /* Import premium fonts for English (Inter) and Arabic (Cairo) */
+        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap');
+        
+        /* Global Typography */
+        html, body, [class*="css"] {
+            font-family: 'Inter', sans-serif;
+        }
+        
+        /* Enhance Text Areas (Inputs) for readability */
+        textarea {
+            font-family: 'Cairo', 'Inter', sans-serif !important;
+            font-size: 16px !important; /* Prevents auto-zoom on iPhones */
+            line-height: 1.6 !important;
+            border-radius: 8px !important;
+        }
+        
+        /* GREEN PRIMARY BUTTONS (Load & Submit actions) */
+        button[kind="primary"] {
+            background-color: #10B981 !important; /* Emerald Green */
+            border-color: #10B981 !important;
+            color: white !important;
+            font-size: 16px !important;
+            font-weight: 600 !important;
+            border-radius: 8px !important;
+            padding: 0.5rem 1rem !important;
+            box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.2) !important;
+            transition: all 0.2s ease-in-out !important;
+        }
+        button[kind="primary"]:hover {
+            background-color: #059669 !important;
+            border-color: #059669 !important;
+            transform: translateY(-2px);
+        }
+
+        /* RED ACKNOWLEDGMENT BOX overrides */
+        div[data-testid="stAlert"]:has(p:contains("CRITICAL STEP")) {
+            background-color: #FEF2F2 !important;
+            border: 1px solid #F87171 !important;
+            color: #991B1B !important;
+            border-radius: 8px !important;
+        }
+        
+        /* RED BUTTON for Acknowledgment (Uses advanced CSS selector) */
+        button:has(p:contains("I have reviewed the final text")) {
+            background-color: #EF4444 !important;
+            border-color: #EF4444 !important;
+            color: white !important;
+            font-size: 16px !important;
+            font-weight: 600 !important;
+            border-radius: 8px !important;
+            transition: all 0.2s ease-in-out !important;
+        }
+        button:has(p:contains("I have reviewed the final text")):hover {
+            background-color: #DC2626 !important;
+            border-color: #DC2626 !important;
+        }
+        
+        /* General mobile padding adjustments */
+        .block-container {
+            padding-top: 2rem !important;
+            padding-bottom: 2rem !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+apply_custom_css()
 
 GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
 GLOSSARY_RANGE = "'المصطلحات'!C:D"
@@ -44,7 +115,8 @@ def login_screen():
     st.title("🤝 12-Step AI Suite: Volunteer Portal")
     with st.form("login_form"):
         email = st.text_input("Enter your registered email address").strip().lower()
-        submitted = st.form_submit_button("Access Portal")
+        # Changed this to primary so it is green and inviting
+        submitted = st.form_submit_button("Access Portal", type="primary")
 
         if submitted:
             volunteers = st.secrets.get("volunteers", {})
@@ -205,12 +277,13 @@ def fetch_glossary():
 
 def generate_html_diff(original: str, suggested: str) -> str:
     if not original or original.startswith("[MISSING"):
-        return "<div dir='rtl' style='color: #0369a1; background-color: #e0f2fe; padding: 10px; border-radius: 5px; text-align: right;'>✨ ترجمة تم توليدها بالكامل من المسرد (New Translation)</div>"
+        return "<div dir='rtl' style='font-family: \"Cairo\", sans-serif; color: #0369a1; background-color: #e0f2fe; padding: 10px; border-radius: 5px; text-align: right;'>✨ ترجمة تم توليدها بالكامل من المسرد (New Translation)</div>"
     if original.strip() == suggested.strip():
-        return "<div dir='rtl' style='color: #155724; background-color: #d4edda; padding: 10px; border-radius: 5px; text-align: right;'>✨ لا توجد تعديلات (Perfect Match)</div>"
+        return "<div dir='rtl' style='font-family: \"Cairo\", sans-serif; color: #155724; background-color: #d4edda; padding: 10px; border-radius: 5px; text-align: right;'>✨ لا توجد تعديلات (Perfect Match)</div>"
     
     diff = difflib.ndiff(original.split(), suggested.split())
-    html = ["<div dir='rtl' style='line-height: 2; font-size: 18px; text-align: right; background-color: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #e9ecef;'>"]
+    # Upgraded fonts for diff visualizer
+    html = ["<div dir='rtl' style='font-family: \"Cairo\", sans-serif; line-height: 2; font-size: 18px; text-align: right; background-color: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #e9ecef;'>"]
     
     for word in diff:
         if word.startswith('- '):
@@ -312,7 +385,7 @@ If the translation captures meaning and tone accurately, leave it as is. If it m
                     _backoff_sleep(attempt)
                     continue
                 break
-    return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": f"⚠️️ Fallback Error."}
+    return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": f"⚠️ Fallback Error."}
 
 # --- MICRO-BATCH AI CALLS & AUTO-CORRECT CASCADE ---
 def translate_batch_with_fallback(batch_segments, glossary_text):
@@ -596,6 +669,7 @@ st.divider()
 st.markdown("### ☁️ Process Google Drive Document")
 doc_url = st.text_input("Paste Google Docs File URL Here:")
 
+# Primary button gets customized to Green via CSS
 if st.button("Load & Process Document", type="primary") and doc_url:
     file_id = extract_id(doc_url)
     if file_id:
@@ -726,29 +800,42 @@ if st.session_state['processed_data']:
         else:
             full_arabic = "\n\n".join([item['final_arabic'] for item in finalized_data])
 
-        # 2. Render side-by-side preview boxes
+        # 2. Render side-by-side preview boxes using custom HTML for premium readability
         st.markdown("### 🔍 Final Full-Text Review")
         col_preview_en, col_preview_ar = st.columns(2)
+        
         with col_preview_en:
-            st.text_area("Full Source Text (English)", value=full_english, height=400, disabled=True)
+            st.markdown(f"""
+            <div style="height: 350px; overflow-y: auto; padding: 15px; background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; font-family: 'Inter', sans-serif; font-size: 15px; line-height: 1.6; white-space: pre-wrap; color: #334155;">
+            {full_english}
+            </div>
+            """, unsafe_allow_html=True)
+            
         with col_preview_ar:
-            st.text_area("Full Compiled Output (Arabic)", value=full_arabic, height=400, disabled=True)
+            # Custom RTL div using the Cairo font (much better than st.text_area)
+            st.markdown(f"""
+            <div dir="rtl" style="height: 350px; overflow-y: auto; padding: 15px; background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; font-family: 'Cairo', sans-serif; font-size: 18px; line-height: 1.8; white-space: pre-wrap; color: #0F172A; text-align: right;">
+            {full_arabic}
+            </div>
+            """, unsafe_allow_html=True)
 
         operator_name = st.session_state["user_name"]
         operator_email = st.session_state["user_email"]
 
-        # 3. The Two-Step Reveal
+        st.divider()
+
+        # 3. The Two-Step Reveal (With Eye-Catching Red Box)
         if "review_unlocked" not in st.session_state:
             st.session_state["review_unlocked"] = False
 
         if not st.session_state["review_unlocked"]:
-            # Step 1: The Acknowledgment Button
-            st.info("Please give the final text a quick read to ensure the narrative flows naturally.")
+            # Step 1: The Acknowledgment Box (Red) & Button (Red)
+            st.error("🚨 **CRITICAL STEP:** Please give the final text a quick read to ensure the narrative flows naturally and respects the glossary.")
             if st.button("👀 I have reviewed the final text and it looks good", use_container_width=True):
                 st.session_state["review_unlocked"] = True
                 st.rerun()
         else:
-            # Step 2: The Actual Push Buttons (Revealed)
+            # Step 2: The Actual Push Buttons (Revealed, styled Green via CSS)
             if st.session_state["app_mode"] == "Translator Mode":
                 if st.session_state.get('source_file_id'):
                     if st.button("🚀 Push Translation to Google Doc", type="primary", use_container_width=True):
