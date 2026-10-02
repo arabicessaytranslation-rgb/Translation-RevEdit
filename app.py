@@ -717,20 +717,34 @@ if st.session_state['processed_data']:
     st.write(f"### **Approved Segments: {approved_count} / {total_segments}**")
 
     if approved_count == total_segments and total_segments > 0:
-        st.success("🎉 All segments approved! Ready to push to Google Docs.")
+        st.success("🎉 All segments approved! Final review before pushing to Google Docs.")
+
+        # 1. Compile the full text for both languages
+        full_english = "\n\n".join([item['english'] for item in st.session_state['processed_data']])
+        
+        if st.session_state["app_mode"] == "Translator Mode":
+            full_arabic = "\n\n".join(finalized_data)
+        else:
+            # Editors store data as dictionaries, so we extract the 'final_arabic' text
+            full_arabic = "\n\n".join([item['final_arabic'] for item in finalized_data])
+
+        # 2. Render side-by-side preview boxes
+        st.markdown("### 🔍 Final Full-Text Review")
+        col_preview_en, col_preview_ar = st.columns(2)
+        with col_preview_en:
+            st.text_area("Full Source Text (English)", value=full_english, height=400, disabled=True)
+        with col_preview_ar:
+            st.text_area("Full Compiled Output (Arabic)", value=full_arabic, height=400, disabled=True)
 
         # Automatically pull operator details from login session
         operator_name = st.session_state["user_name"]
         operator_email = st.session_state["user_email"]
         
         if st.session_state["app_mode"] == "Translator Mode":
-            final_arabic_blob = "\n\n".join(finalized_data)
-            st.text_area("Compiled Arabic Text", value=final_arabic_blob, height=400)
-            
             if st.session_state.get('source_file_id'):
                 if st.button("🚀 Push Translation to Google Doc", type="primary", use_container_width=True):
                     with st.spinner("Pushing to Drive..."):
-                        success = push_to_drive_translator(st.session_state['source_file_id'], final_arabic_blob)
+                        success = push_to_drive_translator(st.session_state['source_file_id'], full_arabic)
                         if success:
                             send_email_notification("Translation", operator_name, operator_email)
                             st.balloons()
