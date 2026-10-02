@@ -257,9 +257,10 @@ if st.session_state.get("app_mode") == "God Mode":
         except Exception as e:
             st.error(f"Failed to load sessions: {e}")
 
-    # --- TAB 2: VOLUNTEERS DATABASE ---
+# --- TAB 2: VOLUNTEERS DATABASE ---
     with tab2:
         st.subheader("Manage Volunteer Access")
+        st.caption("Edit volunteer info or use the dropdowns to assign roles and update statuses.")
         try:
             res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=VOLUNTEERS_RANGE).execute()
             vol_data = res.get('values', [])
@@ -267,7 +268,27 @@ if st.session_state.get("app_mode") == "God Mode":
                 vol_data = [["Email", "Name", "Role", "Status"]]
             
             df_vol = pd.DataFrame(vol_data[1:], columns=vol_data[0])
-            edited_vol = st.data_editor(df_vol, num_rows="dynamic", use_container_width=True)
+            
+            # Configure Role and Status columns to render as dropdown selectboxes
+            edited_vol = st.data_editor(
+                df_vol, 
+                num_rows="dynamic", 
+                use_container_width=True,
+                column_config={
+                    "Role": st.column_config.SelectboxColumn(
+                        "Role",
+                        help="Select user permission level",
+                        options=["translator", "reviewer", "admin"],
+                        required=True
+                    ),
+                    "Status": st.column_config.SelectboxColumn(
+                        "Status",
+                        help="Account access state",
+                        options=["Active", "Suspended"],
+                        required=True
+                    )
+                }
+            )
             
             if st.button("💾 Save Volunteers to Database", type="primary"):
                 clean_df = edited_vol.fillna("")
