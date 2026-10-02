@@ -305,39 +305,41 @@ if st.session_state.get("app_mode") == "God Mode":
         except Exception as e:
             st.error(f"Error loading glossary: {e}")
 
-   # --- TAB 4: MASTER PIPELINE ---
+  # --- TAB 4: MASTER PIPELINE (Timeline Scanner) ---
     with tab4:
-        st.subheader("Google Drive Folder Scanner")
-        st.caption("Select a folder to view all documents currently inside it.")
+        st.subheader("Google Drive Timeline Scanner")
         
-        try:
-            # 1. Dynamically fetch all folders shared with the Service Account
-            folder_query = "mimeType='application/vnd.google-apps.folder' and trashed=false"
-            folder_results = drive_service.files().list(
-                q=folder_query, 
-                pageSize=50, 
-                fields="files(id, name)", 
-                orderBy="name"
-            ).execute()
+        col_year, col_month = st.columns(2)
+        with col_year:
+            current_years = ["2024", "2025", "2026", "2027", "2028"]
+            selected_year = st.selectbox("Select Year:", current_years, index=2) # Defaults to 2026
+        with col_month:
+            months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+            selected_month = st.selectbox("Select Month:", months, index=9) # Defaults to October
             
-            folders = folder_results.get('files', [])
+        if st.button("🔄 Scan Folder", type="primary"):
+            # CHANGE THIS to match exactly how your folders are named in Drive! 
+            target_folder_name = f"{selected_month} {selected_year}" 
             
-            if folders:
-                # Build a dictionary to map the display name to the actual Folder ID
-                folder_options = {f"📁 {f['name']}": f['id'] for f in folders}
-                
-                # 2. Render the selection list
-                selected_folder_name = st.selectbox("Select Target Folder:", options=list(folder_options.keys()))
-                
-                if st.button("🔄 Scan Selected Folder", type="primary"):
-                    folder_id = folder_options[selected_folder_name]
+            with st.spinner(f"Searching Drive for folder: '{target_folder_name}'..."):
+                try:
+                    # 1. Find the specific folder by name
+                    folder_query = f"name='{target_folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+                    folder_results = drive_service.files().list(q=folder_query, fields="files(id, name)").execute()
+                    folders = folder_results.get('files', [])
                     
-                    with st.spinner(f"Scanning {selected_folder_name}..."):
-                        # 3. Query documents specifically inside the selected folder
+                    if not folders:
+                        st.error(f"Could not find a folder named '{target_folder_name}' shared with the Service Account.")
+                    else:
+                        # Grab the ID of the matched folder
+                        folder_id = folders[0]['id']
+                        st.success(f"Located folder: **{target_folder_name}**")
+                        
+                        # 2. Query all documents inside this specific folder
                         doc_query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false"
                         doc_results = drive_service.files().list(
                             q=doc_query, 
-                            pageSize=50, 
+                            pageSize=100, 
                             fields="files(id, name, modifiedTime)", 
                             orderBy="modifiedTime desc"
                         ).execute()
@@ -345,17 +347,15 @@ if st.session_state.get("app_mode") == "God Mode":
                         files = doc_results.get('files', [])
                         
                         if files:
-                            st.success(f"Found {len(files)} documents in this folder.")
+                            st.write(f"### Found {len(files)} documents:")
                             for f in files:
                                 mod_time = f.get('modifiedTime', '')[:10] 
                                 st.markdown(f"📄 **{f['name']}** *(Last modified: {mod_time})*  \n`ID: {f['id']}` — [Open in Google Docs](https://docs.google.com/document/d/{f['id']})")
                         else:
-                            st.warning("No Google Docs found inside this specific folder.")
-            else:
-                st.info("No folders found. Please share your project folders with the Service Account email in Google Drive.")
-                
-        except Exception as e:
-            st.error(f"Drive API error: {e}")
+                            st.info("The folder exists, but there are no Google Docs inside it yet.")
+                            
+                except Exception as e:
+                    st.error(f"Drive API error: {e}")
     # --- TAB 5: BROADCAST DESK ---
     with tab5:
         st.subheader("Team Broadcast System")
