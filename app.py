@@ -306,11 +306,11 @@ if st.session_state.get("app_mode") == "God Mode":
             res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_RANGE).execute()
             glos_data = res.get('values', [])
             
+            # If the sheet is completely empty, provide default headers and a blank row
             if not glos_data or len(glos_data) == 0:
-                glos_data = [["ID", "Category", "English", "Arabic"]]
+                glos_data = [["ID", "Category", "English", "Arabic"], ["1", "General", "", ""]]
                 
             headers = glos_data[0]
-            # Ensure headers are unique and replace any empty strings with fallback names
             seen = {}
             unique_headers = []
             for idx, h in enumerate(headers):
@@ -326,12 +326,15 @@ if st.session_state.get("app_mode") == "God Mode":
                 
             glos_data[0] = unique_headers
             
-            # Pad rows so they match the header length
             max_cols = len(unique_headers)
             padded_rows = []
             for row in glos_data[1:]:
                 row.extend([""] * (max_cols - len(row)))
                 padded_rows.append(row)
+                
+            # Fallback if there are no data rows yet
+            if not padded_rows:
+                padded_rows = [[""] * max_cols]
                 
             df_glos = pd.DataFrame(padded_rows, columns=unique_headers)
             edited_glos = st.data_editor(df_glos, num_rows="dynamic", use_container_width=True)
