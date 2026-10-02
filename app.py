@@ -210,8 +210,8 @@ if st.session_state.get("app_mode") == "God Mode":
         
     st.divider()
     
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📡 Live Radar", "👥 Volunteers", "📖 Glossary", "🗂️ Drive Pipeline", "📢 Broadcast"
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📡 Live Radar", "👥 Volunteers", "📖 Glossary", "📢 Broadcast"
     ])
     
     # --- TAB 1: LIVE RADAR (Sessions) ---
@@ -270,7 +270,6 @@ if st.session_state.get("app_mode") == "God Mode":
             edited_vol = st.data_editor(df_vol, num_rows="dynamic", use_container_width=True)
             
             if st.button("💾 Save Volunteers to Database", type="primary"):
-                # .fillna("") fixes the Segmentation Fault bug caused by null values
                 clean_df = edited_vol.fillna("")
                 updated_matrix = [clean_df.columns.tolist()] + clean_df.values.tolist()
                 overwrite_sheet_data(VOLUNTEERS_RANGE, updated_matrix)
@@ -296,80 +295,16 @@ if st.session_state.get("app_mode") == "God Mode":
             edited_glos = st.data_editor(df_glos, num_rows="dynamic", use_container_width=True)
             
             if st.button("💾 Sync Glossary to AI", type="primary"):
-                # .fillna("") fixes the Segmentation Fault bug caused by null values
                 clean_df = edited_glos.fillna("")
                 updated_matrix = [clean_df.columns.tolist()] + clean_df.values.tolist()
                 overwrite_sheet_data(GLOSSARY_RANGE, updated_matrix)
                 st.success("Glossary synced successfully!")
-                st.cache_data.clear() # Clears local cache to force fresh pull for AI
+                st.cache_data.clear()
         except Exception as e:
             st.error(f"Error loading glossary: {e}")
 
-# --- TAB 4: MASTER PIPELINE (Nested Timeline Scanner) ---
+    # --- TAB 4: BROADCAST DESK ---
     with tab4:
-        st.subheader("Google Drive Timeline Scanner")
-        st.caption("Navigates your Year and Month folder structure automatically.")
-        
-        col_year, col_month = st.columns(2)
-        with col_year:
-            current_years = ["2022", "2023", "2024", "2025", "2026", "2027"]
-            selected_year = st.selectbox("Select Year:", current_years, index=4) # Defaults to 2026
-        with col_month:
-            months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
-            selected_month = st.selectbox("Select Month:", months, index=9) # Defaults to October
-            
-        if st.button("🔄 Scan Folder", type="primary"):
-            with st.spinner(f"Navigating folders for {selected_month} {selected_year}..."):
-                try:
-                    # STEP 1: Find the Year folder (e.g., "2026 Edition")
-                    year_query = f"name contains '{selected_year}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-                    year_results = drive_service.files().list(q=year_query, fields="files(id, name)").execute()
-                    year_folders = year_results.get('files', [])
-                    
-                    matched_year_folder = next((f for f in year_folders if selected_year in f['name']), None)
-                    
-                    if not matched_year_folder:
-                        st.error(f"Could not find a year folder for '{selected_year}' (e.g., '2026 Edition').")
-                    else:
-                        year_folder_id = matched_year_folder['id']
-                        
-                        # STEP 2: Find the Month subfolder INSIDE the Year folder (e.g., "10-October 2026")
-                        month_query = f"'{year_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
-                        month_results = drive_service.files().list(q=month_query, fields="files(id, name)").execute()
-                        month_folders = month_results.get('files', [])
-                        
-                        # Match the month name (e.g., checking if "October" or "Oct" is in "10-October 2026")
-                        matched_month_folder = next((f for f in month_folders if selected_month.lower() in f['name'].lower()), None)
-                        
-                        if not matched_month_folder:
-                            st.error(f"Found the '{matched_year_folder['name']}' folder, but could not find a subfolder matching '{selected_month}' inside it.")
-                        else:
-                            month_folder_id = matched_month_folder['id']
-                            st.success(f"Located path: **{matched_year_folder['name']} ➔ {matched_month_folder['name']}**")
-                            
-                            # STEP 3: Scan all Google Docs inside the Month subfolder
-                            doc_query = f"'{month_folder_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false"
-                            doc_results = drive_service.files().list(
-                                q=doc_query, 
-                                pageSize=100, 
-                                fields="files(id, name, modifiedTime)", 
-                                orderBy="modifiedTime desc"
-                            ).execute()
-                            
-                            files = doc_results.get('files', [])
-                            
-                            if files:
-                                st.write(f"### Found {len(files)} documents:")
-                                for f in files:
-                                    mod_time = f.get('modifiedTime', '')[:10] 
-                                    st.markdown(f"📄 **{f['name']}** *(Last modified: {mod_time})*  \n`ID: {f['id']}` — [Open in Google Docs](https://docs.google.com/document/d/{f['id']})")
-                            else:
-                                st.info(f"The folder '{matched_month_folder['name']}' exists, but contains no Google Docs yet.")
-                                
-                except Exception as e:
-                    st.error(f"Drive API error: {e}")
-    # --- TAB 5: BROADCAST DESK ---
-    with tab5:
         st.subheader("Team Broadcast System")
         st.caption("Send a mass email to all 'Active' volunteers in the database.")
         broadcast_subject = st.text_input("Subject")
@@ -647,7 +582,7 @@ If the translation captures meaning and tone accurately, leave it as is. If it m
                     _backoff_sleep(attempt)
                     continue
                 break
-    return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "⚠️️ Fallback Error."}
+    return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "⚠ Fallback Error."}
 
 def translate_batch_with_fallback(batch_segments, glossary_text):
     if not GENAI_AVAILABLE or client is None:
@@ -918,7 +853,7 @@ if st.button("Load & Process Document", type="primary") and doc_url:
                                 "arabic_translation": ai_res.get("arabic_translation", ""),
                                 "glossary_notes": ai_res.get("glossary_notes", ""),
                                 "user_arabic": ai_res.get("arabic_translation", ""),
-                                "is_approved": False  # Defaults strictly to False
+                                "is_approved": False
                             })
                         progress_bar.progress((idx + 1) / len(batches))
                         
