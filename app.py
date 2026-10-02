@@ -298,21 +298,42 @@ if st.session_state.get("app_mode") == "God Mode":
         except Exception as e:
             st.error(f"Error loading volunteers: {e}")
 
-    # --- TAB 3: GLOSSARY COMMAND CENTER ---
+# --- TAB 3: GLOSSARY COMMAND CENTER ---
     with tab3:
         st.subheader("Live Terminology Editor")
         st.caption("Changes here will instantly update the AI's translation rules.")
         try:
             res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_RANGE).execute()
             glos_data = res.get('values', [])
-            if not glos_data:
+            
+            if not glos_data or len(glos_data) == 0:
                 glos_data = [["ID", "Category", "English", "Arabic"]]
                 
-            max_cols = max(len(row) for row in glos_data)
-            for row in glos_data:
-                row.extend([""] * (max_cols - len(row)))
+            headers = glos_data[0]
+            # Ensure headers are unique and replace any empty strings with fallback names
+            seen = {}
+            unique_headers = []
+            for idx, h in enumerate(headers):
+                h_str = str(h).strip()
+                if not h_str:
+                    h_str = f"Column_{idx+1}"
+                if h_str in seen:
+                    seen[h_str] += 1
+                    h_str = f"{h_str}_{seen[h_str]}"
+                else:
+                    seen[h_str] = 0
+                unique_headers.append(h_str)
                 
-            df_glos = pd.DataFrame(glos_data[1:], columns=glos_data[0])
+            glos_data[0] = unique_headers
+            
+            # Pad rows so they match the header length
+            max_cols = len(unique_headers)
+            padded_rows = []
+            for row in glos_data[1:]:
+                row.extend([""] * (max_cols - len(row)))
+                padded_rows.append(row)
+                
+            df_glos = pd.DataFrame(padded_rows, columns=unique_headers)
             edited_glos = st.data_editor(df_glos, num_rows="dynamic", use_container_width=True)
             
             if st.button("💾 Sync Glossary to AI", type="primary"):
