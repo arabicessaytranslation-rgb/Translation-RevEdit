@@ -161,8 +161,8 @@ def assign_task_to_sheet(doc_id, doc_name, t_email, r_email, status):
     assignments = fetch_assignments()
     row_idx = None
     for row in assignments:
-        if row['doc_id'] == doc_id:
-            row_idx = row['row_index']
+        if row.get('doc_id') == doc_id:
+            row_idx = row.get('row_index')
             break
 
     body = {'values': [[doc_id, doc_name, t_email, r_email, status]]}
@@ -176,8 +176,8 @@ def assign_task_to_sheet(doc_id, doc_name, t_email, r_email, status):
 def update_assignment_status(doc_id, new_status):
     assignments = fetch_assignments()
     for task in assignments:
-        if task['doc_id'] == doc_id:
-            range_name = f"'Assignments'!E{task['row_index']}"
+        if task.get('doc_id') == doc_id:
+            range_name = f"'Assignments'!E{task.get('row_index')}"
             body = {'values': [[new_status]]}
             sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=range_name, valueInputOption="USER_ENTERED", body=body).execute()
             break
@@ -197,11 +197,11 @@ def login_screen():
                     volunteers = fetch_volunteers()
                     if email in volunteers:
                         user_data = volunteers[email]
-                        if user_data["status"].lower() != "active":
+                        if user_data.get("status", "").lower() != "active":
                             st.error("Account suspended. Please contact the coordinator.")
                         else:
-                            st.session_state.update({"authenticated": True, "user_email": email, "user_role": user_data["role"], "user_name": user_data["name"]})
-                            st.session_state["app_mode"] = "God Mode" if user_data["role"] == "admin" else ("Translator Mode" if user_data["role"] == "translator" else "Reviewer Mode")
+                            st.session_state.update({"authenticated": True, "user_email": email, "user_role": user_data.get("role"), "user_name": user_data.get("name")})
+                            st.session_state["app_mode"] = "God Mode" if user_data.get("role") == "admin" else ("Translator Mode" if user_data.get("role") == "translator" else "Reviewer Mode")
                             st.rerun()
                     else:
                         st.error("Email not recognized in the system.")
@@ -306,7 +306,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
         if st.button("🚀 Send Broadcast", type="primary"):
             if broadcast_subject and broadcast_message:
                 vols = fetch_volunteers()
-                active_emails = [email for email, d in vols.items() if d['status'].lower() == 'active']
+                active_emails = [email for email, d in vols.items() if d.get('status', '').lower() == 'active']
                 if active_emails:
                     with st.spinner("Dispatching emails via secure SMTP..."):
                         try:
@@ -369,23 +369,23 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
                 if docs:
                     st.markdown(f"### Available Documents ({len(docs)})")
                     vols = fetch_volunteers()
-                    t_list = ["[Optional] Bypass - AI Only"] + [e for e, d in vols.items() if d['role'] in ['translator', 'admin'] and d['status'].lower() == 'active']
-                    r_list = ["[Mandatory] Select Reviewer..."] + [e for e, d in vols.items() if d['role'] in ['reviewer', 'admin'] and d['status'].lower() == 'active']
+                    t_list = ["[Optional] Bypass - AI Only"] + [e for e, d in vols.items() if d.get('role') in ['translator', 'admin'] and d.get('status', '').lower() == 'active']
+                    r_list = ["[Mandatory] Select Reviewer..."] + [e for e, d in vols.items() if d.get('role') in ['reviewer', 'admin'] and d.get('status', '').lower() == 'active']
                     
                     for doc in docs:
                         with st.container(border=True):
                             c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-                            c1.markdown(f"📄 **{doc['name']}**")
-                            t_sel = c2.selectbox("Translator", t_list, key=f"t_{doc['id']}")
-                            r_sel = c3.selectbox("Reviewer", r_list, key=f"r_{doc['id']}")
+                            c1.markdown(f"📄 **{doc.get('name')}**")
+                            t_sel = c2.selectbox("Translator", t_list, key=f"t_{doc.get('id')}")
+                            r_sel = c3.selectbox("Reviewer", r_list, key=f"r_{doc.get('id')}")
                             
-                            if c4.button("🚀 Assign Task", key=f"btn_{doc['id']}", use_container_width=True):
+                            if c4.button("🚀 Assign Task", key=f"btn_{doc.get('id')}", use_container_width=True):
                                 if r_sel == r_list[0]:
                                     st.error("❌ You must select a Reviewer!")
                                 else:
                                     t_email = "" if t_sel == t_list[0] else t_sel
                                     status = "Pending Review" if t_email == "" else "Pending Translation"
-                                    assign_task_to_sheet(doc['id'], doc['name'], t_email, r_sel, status)
+                                    assign_task_to_sheet(doc.get('id'), doc.get('name'), t_email, r_sel, status)
                                     msg = f"Task assigned! Skipped human translation." if not t_email else f"Task assigned: {t_email} -> {r_sel}."
                                     st.success(f"✅ {msg}")
                 else:
@@ -404,7 +404,7 @@ if not st.session_state.get('source_file_id'):
     if col_l.button("🚪 Logout", use_container_width=True): 
         st.session_state.clear(); st.rerun()
     
-    st.subheader(f"👋 Welcome, {st.session_state['user_name']} | Role: {st.session_state['user_role'].capitalize()}")
+    st.subheader(f"👋 Welcome, {st.session_state.get('user_name')} | Role: {st.session_state.get('user_role', '').capitalize()}")
     st.markdown("---")
     
     st.markdown("### 📬 Your Task Queue")
@@ -412,9 +412,9 @@ if not st.session_state.get('source_file_id'):
     my_tasks = []
     
     for task in assignments:
-        if st.session_state["app_mode"] == "Translator Mode" and task.get('translator') == st.session_state['user_email'] and task.get('status') == "Pending Translation":
+        if st.session_state.get("app_mode") == "Translator Mode" and task.get('translator') == st.session_state.get('user_email') and task.get('status') == "Pending Translation":
             my_tasks.append(task)
-        elif st.session_state["app_mode"] == "Reviewer Mode" and task.get('reviewer') == st.session_state['user_email'] and task.get('status') == "Pending Review":
+        elif st.session_state.get("app_mode") == "Reviewer Mode" and task.get('reviewer') == st.session_state.get('user_email') and task.get('status') == "Pending Review":
             my_tasks.append(task)
 
     if not my_tasks:
@@ -423,11 +423,11 @@ if not st.session_state.get('source_file_id'):
         for task in my_tasks:
             with st.container(border=True):
                 c1, c2 = st.columns([4, 1])
-                c1.markdown(f"### 📄 **{task['doc_name']}**")
-                c1.caption(f"Status: `{task['status']}` | ID: {task['doc_id']}")
-                if c2.button("🚀 Start Work", key=f"start_{task['doc_id']}", type="primary", use_container_width=True):
+                c1.markdown(f"### 📄 **{task.get('doc_name')}**")
+                c1.caption(f"Status: `{task.get('status')}` | ID: {task.get('doc_id')}")
+                if c2.button("🚀 Start Work", key=f"start_{task.get('doc_id')}", type="primary", use_container_width=True):
                     st.session_state['active_task'] = task
-                    st.session_state['source_file_id'] = task['doc_id']
+                    st.session_state['source_file_id'] = task.get('doc_id')
                     st.rerun()
     st.stop() # Wait for user to pick a task
 
@@ -553,7 +553,20 @@ def _call_gemini(model_name, prompt, schema_type):
     return json.loads(clean_text)
 
 def translate_with_ai(english: str, glossary_text: str):
-    prompt = f"Expert translator for 12-step literature.\nGLOSSARY:\n{glossary_text}\nTranslate:\n{english}"
+    prompt = f"""You are an expert bilingual translator specializing in 12-step recovery literature. 
+Translate the English text into Arabic accurately, ensuring the tone remains clinical, professional, and non-moralizing.
+
+CRITICAL INSTRUCTIONS:
+- Do not perform blind word-for-word replacements. Actively understand semantic meaning.
+- When pronouns like "it" appear referring to concepts such as "the program", ensure the Arabic translation reflects the correct contextual noun/glossary term and grammatical gender.
+- Apply the glossary terms naturally into the sentence flow.
+
+GLOSSARY TERMS:
+{glossary_text}
+
+Translate:
+English Source: "{english}"
+"""
     for model_name in get_fallback_models():
         for attempt in range(MAX_RETRIES_PER_MODEL):
             try:
@@ -564,7 +577,22 @@ def translate_with_ai(english: str, glossary_text: str):
     return {"arabic_translation": "", "glossary_notes": "⚠ Error"}
 
 def review_with_ai(english: str, arabic: str, glossary_text: str):
-    prompt = f"Expert editor for 12-step literature.\nGLOSSARY:\n{glossary_text}\nEnglish: {english}\nArabic: {arabic}"
+    prompt = f"""You are an expert bilingual editor specializing in 12-step recovery literature. 
+Ensure the Arabic translation is accurate, clinical, professional, and grammatically sound.
+
+CRITICAL INSTRUCTIONS:
+- Do not perform blind word-for-word replacements.
+- Respect recovery glossary terms and verify sentence flow.
+
+GLOSSARY TERMS:
+{glossary_text}
+
+Review this pair:
+English Source: "{english}"
+Original Arabic: "{arabic}"
+
+If the translation captures meaning and tone accurately, leave it as is. If it misses glossary nuance or sounds unnatural, provide the polished Arabic translation.
+"""
     for model_name in get_fallback_models():
         for attempt in range(MAX_RETRIES_PER_MODEL):
             try:
@@ -575,9 +603,24 @@ def review_with_ai(english: str, arabic: str, glossary_text: str):
     return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "⚠ Error"}
 
 def translate_batch_with_fallback(batch_segments, glossary_text):
-    if not GENAI_AVAILABLE or client is None: return [translate_with_ai(s['english'], glossary_text) for s in batch_segments]
+    if not GENAI_AVAILABLE or client is None: return [translate_with_ai(s.get('english', ''), glossary_text) for s in batch_segments]
     input_payload = "\n\n".join([f"ID: {s.get('id', 0)}\nText: {s.get('english', '')}" for s in batch_segments])
-    prompt = f"Expert translator for 12-step literature.\nGLOSSARY:\n{glossary_text}\nSegments:\n{input_payload}"
+    
+    prompt = f"""You are an expert bilingual translator specializing in 12-step recovery literature. 
+Translate the following English segments into Arabic accurately. Ensure the tone remains clinical, professional, and non-moralizing.
+
+CRITICAL INSTRUCTIONS FOR THIS BATCH:
+1. Narrative Flow: Maintain consistent grammatical gender, tone, and pronoun references across all segments.
+2. Contextual Nuance: Actively understand the semantic meaning.
+3. Pronoun Resolution: Reflect the correct contextual noun and proper Arabic grammatical gender.
+4. Glossary Integration: Apply glossary terms naturally.
+
+GLOSSARY TERMS:
+{glossary_text}
+
+Segments to Translate:
+{input_payload}"""
+
     for model_name in get_fallback_models():
         for attempt in range(2):
             try:
@@ -596,7 +639,20 @@ def translate_batch_with_fallback(batch_segments, glossary_text):
 def review_batch_with_fallback(batch_segments, glossary_text):
     if not GENAI_AVAILABLE or client is None: return [review_with_ai(s.get('english', ''), s.get('arabic', ''), glossary_text) for s in batch_segments]
     input_payload = "\n\n".join([f"ID: {s.get('id', 0)}\nEnglish: {s.get('english', '')}\nArabic: {s.get('arabic', '')}" for s in batch_segments])
-    prompt = f"Expert editor for 12-step literature.\nGLOSSARY:\n{glossary_text}\nPairs:\n{input_payload}"
+    
+    prompt = f"""You are an expert bilingual editor specializing in 12-step recovery literature. 
+Review the following English/Arabic pairs for accuracy, tone, and glossary adherence. Ensure the tone remains clinical, professional, and non-moralizing.
+
+CRITICAL INSTRUCTIONS FOR THIS BATCH:
+1. Narrative Flow: Maintain consistent grammatical gender, tone, and pronoun references across all segments.
+2. Glossary Integration: Respect recovery glossary terms. If the translation is accurate, keep it. If not, provide the polished text.
+
+GLOSSARY TERMS:
+{glossary_text}
+
+Pairs to Review:
+{input_payload}"""
+
     for model_name in get_fallback_models():
         for attempt in range(2):
             try:
@@ -634,7 +690,7 @@ def extract_text_from_drive(file_id):
         return None
 
 def smart_align(paragraphs):
-    en_paras, ar_paras = [p for p in paragraphs if not re.search(r'[\u0600-\u06FF]', p['text'])], [p for p in paragraphs if re.search(r'[\u0600-\u06FF]', p['text'])]
+    en_paras, ar_paras = [p for p in paragraphs if not re.search(r'[\u0600-\u06FF]', p.get('text', ''))], [p for p in paragraphs if re.search(r'[\u0600-\u06FF]', p.get('text', ''))]
     aligned = []
     for i in range(max(len(en_paras), len(ar_paras))):
         en_obj = en_paras[i] if i < len(en_paras) else {'text': "[MISSING ENGLISH SOURCE]"}
@@ -656,7 +712,7 @@ def push_reviewer(doc_id, segments):
         reqs = []
         for s in sorted([seg for seg in segments if seg.get('ar_start') is not None], key=lambda x: x['ar_start'], reverse=True):
             reqs.append({'deleteContentRange': {'range': {'startIndex': s['ar_start'], 'endIndex': s['ar_end'] - 1}}})
-            reqs.append({'insertText': {'location': {'index': s['ar_start']}, 'text': s['final_arabic']}})
+            reqs.append({'insertText': {'location': {'index': s['ar_start']}, 'text': s.get('final_arabic', '')}})
         if reqs: docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': reqs}).execute()
         return True
     except Exception as e:
@@ -674,9 +730,11 @@ if not task:
     st.rerun()
 
 file_id = task.get('doc_id')
-
-# 👇 هذا هو السطر المفقود الذي يجب إضافته هنا 👇
 glossary_data = fetch_glossary()
+
+# 🧠 SMART ENGINE ROUTING: Detect if this is a Bypass Task
+is_bypass_task = (task.get('translator') == "")
+run_translation_engine = (st.session_state.get("app_mode") == "Translator Mode" or is_bypass_task)
 
 col_h1, col_h2 = st.columns([5, 1])
 col_h1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
@@ -687,7 +745,7 @@ if col_h2.button("⬅️ Back to Inbox", use_container_width=True):
     st.rerun()
 
 if not st.session_state.get('processed_data'):
-    lock = manage_document_lock(file_id, st.session_state['user_email'])
+    lock = manage_document_lock(file_id, st.session_state.get('user_email'))
     if lock["status"] == "blocked":
         st.error(f"🛑 **Document In Use:** This document is currently locked by `{lock.get('locked_by', 'another user')}`.")
         st.stop()
@@ -697,14 +755,20 @@ if not st.session_state.get('processed_data'):
         st.success("♻️ **Session Recovered.** Restored your previous work.")
     elif lock["status"] == "clear":
         st.session_state['session_row_index'] = lock["row_index"]
-        st.info("Extracting document content and analyzing via AI...")
+        
         paras = extract_text_from_drive(file_id)
         
         if paras:
             processed_results = []
             progress_bar = st.progress(0)
             
-            if st.session_state["app_mode"] == "Translator Mode":
+            # --- THE FIX: CLEAN AI BYPASS DRAFTING ---
+            if run_translation_engine:
+                if is_bypass_task:
+                    st.info("🤖 **AI Bypass Mode:** Generating a fresh AI draft directly for your review...")
+                else:
+                    st.info("Extracting document content and translating via AI Batching...")
+                    
                 batches = [paras[i:i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
                 for idx, batch in enumerate(batches):
                     ai_results = translate_batch_with_fallback([{'id': j + 1, 'english': p.get('text', '')} for j, p in enumerate(batch)], glossary_data)
@@ -718,7 +782,10 @@ if not st.session_state.get('processed_data'):
                             "is_approved": False
                         })
                     progress_bar.progress((idx + 1) / len(batches))
+            
+            # --- NORMAL REVIEWER MODE ---
             else:
+                st.info("Extracting blocks and comparing with original translation...")
                 segments = smart_align(paras)
                 normal_segs = [s for s in segments if s.get('english') != "[MISSING ENGLISH SOURCE]" and s.get('arabic') != "[MISSING ARABIC TRANSLATION]"]
                 batches = [normal_segs[i:i + BATCH_SIZE] for i in range(0, len(normal_segs), BATCH_SIZE)]
@@ -737,13 +804,12 @@ if not st.session_state.get('processed_data'):
                         })
                     progress_bar.progress((idx + 1) / len(batches))
                 
-                # Handle Anomalies gracefully (Lazy AI Bypass evaluation for Reviewers)
                 for item in segments:
                     if item.get('english') == "[MISSING ENGLISH SOURCE]":
                         processed_results.append({
                             "id": item.get('id'), "status": "major_rewrite", "english": "[MISSING]",
                             "original_arabic": item.get('arabic', ''), "suggested_arabic": item.get('arabic', ''),
-                            "reasoning": "⚠️️ Orphaned Arabic block.", 
+                            "reasoning": "⚠ Orphaned Arabic block.", 
                             "ar_start": item.get('ar_start'), "ar_end": item.get('ar_end'), 
                             "user_arabic": item.get('arabic', ''), "is_approved": False
                         })
@@ -759,7 +825,7 @@ if not st.session_state.get('processed_data'):
                         
                 processed_results.sort(key=lambda x: x.get('id', 0))
             
-            save_draft_to_sheet(file_id, st.session_state['user_email'], st.session_state['session_row_index'], processed_results)
+            save_draft_to_sheet(file_id, st.session_state.get('user_email'), st.session_state.get('session_row_index'), processed_results)
             st.session_state['processed_data'] = processed_results
             st.rerun()
 
@@ -767,7 +833,7 @@ if not st.session_state.get('processed_data'):
 approved_count, finalized_data, state_modified = 0, [], False
 st.divider()
 
-for i, item in enumerate(st.session_state['processed_data']):
+for i, item in enumerate(st.session_state.get('processed_data', [])):
     seg_id = item.get('id', i + 1)
     status_val = item.get('status', 'minor_edits')
     eng_txt = item.get('english', '')
@@ -775,14 +841,18 @@ for i, item in enumerate(st.session_state['processed_data']):
     sugg_ar = item.get('suggested_arabic', item.get('arabic_translation', ''))
     
     with st.container(border=True):
-        if st.session_state["app_mode"] == "Translator Mode":
+        if run_translation_engine:
             st.markdown(f"### Segment {seg_id}")
             col_en, col_ar = st.columns(2)
             with col_en:
                 st.info(eng_txt)
                 if item.get('glossary_notes'): st.caption(f"💡 **AI Notes:** {item.get('glossary_notes')}")
             with col_ar:
-                default_val = item.get('user_arabic', sugg_ar)
+                if is_bypass_task:
+                    st.markdown("<div dir='rtl' style='text-align: right; color: #0369a1; background-color: #e0f2fe; padding: 5px 10px; border-radius: 5px; margin-bottom: 10px; font-family: \"Cairo\"; font-size: 14px;'>✨ AI Generated Draft (Bypass Mode)</div>", unsafe_allow_html=True)
+                
+                sugg_trans = item.get('arabic_translation', '')
+                default_val = item.get('user_arabic', sugg_trans)
                 final_text = st.text_area("Final text", value=default_val, height=120, key=f"edit_{i}", label_visibility="collapsed")
                 if final_text != item.get('user_arabic'): 
                     item['user_arabic'] = final_text
@@ -811,17 +881,17 @@ for i, item in enumerate(st.session_state['processed_data']):
             
         if chk:
             approved_count += 1
-            if st.session_state["app_mode"] == "Translator Mode": 
+            if run_translation_engine: 
                 finalized_data.append(final_text)
             else: 
                 finalized_data.append({'final_arabic': final_text, 'ar_start': item.get('ar_start'), 'ar_end': item.get('ar_end')})
 
 if state_modified: 
-    save_draft_to_sheet(file_id, st.session_state['user_email'], st.session_state['session_row_index'], st.session_state['processed_data'])
+    save_draft_to_sheet(file_id, st.session_state.get('user_email'), st.session_state.get('session_row_index'), st.session_state.get('processed_data'))
 
 # --- SUBMISSION LOGIC ---
 st.divider()
-total_segments = len(st.session_state['processed_data'])
+total_segments = len(st.session_state.get('processed_data', []))
 st.write(f"### **Approved Segments: {approved_count} / {total_segments}**")
 
 if approved_count == total_segments and total_segments > 0:
@@ -837,10 +907,13 @@ if approved_count == total_segments and total_segments > 0:
     else:
         if st.button("🚀 Push to Drive & Close Task", type="primary", use_container_width=True):
             with st.spinner("Processing Drive updates and concluding workflow..."):
-                if st.session_state["app_mode"] == "Translator Mode":
+                if run_translation_engine:
                     success = push_translator(file_id, "\n\n".join(finalized_data))
                     if success:
-                        new_status = "Completed" if task.get('translator') == task.get('reviewer') else "Pending Review"
+                        if is_bypass_task or (task.get('translator') == task.get('reviewer')):
+                            new_status = "Completed"
+                        else:
+                            new_status = "Pending Review"
                         update_assignment_status(file_id, new_status)
                 else:
                     success = push_reviewer(file_id, finalized_data)
