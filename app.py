@@ -6,6 +6,7 @@ import random
 import re
 import smtplib
 import time
+import requests
 from datetime import datetime, timedelta
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -377,12 +378,13 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get(
     st.session_state.clear()
     st.rerun()
 
-  tab_track, tab_assign, tab_vols, tab_glos, tab_bcast = st.tabs([
+  tab_track, tab_assign, tab_vols, tab_glos, tab_bcast, tab_prep = st.tabs([
       "📊 Task Tracker",
       "🗂️ Assignment Desk",
       "👥 Volunteers",
       "📖 Glossary",
       "📢 Broadcast",
+      "🤖 Auto-Prep Bot",
   ])
 
   vols = fetch_volunteers()
@@ -694,6 +696,63 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get(
       else:
         st.warning("Please enter a subject and a message.")
 
+  # =========================================================
+  # TAB 6: AUTO-PREP BOT (Telegram & GAS Integration)
+  # =========================================================
+  with tab_prep:
+    st.subheader("🤖 Automated Edition Prep-Bot")
+    st.info("أدخل رابط المجلد الخام، وسيقوم البوت بإنشاء المجلدات، تحويل الملفات إلى Google Docs، تحديث الشيت الخاص بالبث، وإرسال تنبيهات على تيليجرام.")
+
+    with st.container(border=True):
+      c_link, c_year, c_month = st.columns([3, 1, 1])
+      
+      raw_link = c_link.text_input("🔗 Raw Folder Link (Google Drive):", placeholder="https://drive.google.com/drive/folders/...")
+      
+      current_year = datetime.now().year
+      years = [str(y) for y in range(current_year - 1, current_year + 3)]
+      sel_year = c_year.selectbox("Year:", years, index=1)
+      
+      months = ["1 - January", "2 - February", "3 - March", "4 - April", "5 - May", "6 - June", 
+                "7 - July", "8 - August", "9 - September", "10 - October", "11 - November", "12 - December"]
+      sel_month = c_month.selectbox("Month:", months)
+
+      if st.button("🚀 Trigger Preparation Bot", type="primary", use_container_width=True):
+        if not raw_link:
+          st.error("❌ الرجاء إدخال رابط المجلد أولاً.")
+        else:
+          with st.spinner("⏳ Sending command to Backend Bot..."):
+            try:
+              # استخراج رقم الشهر من الاختيار
+              month_num = int(sel_month.split(" - ")[0])
+              
+              # تجهيز حزمة البيانات
+              payload = {
+                  "url": raw_link,
+                  "year": sel_year,
+                  "monthNum": month_num,
+                  "chatId": st.secrets.get("TELEGRAM_ADMIN_CHAT_ID", "")
+              }
+              
+              # إرسال الطلب إلى Google Apps Script Web App
+              gas_webhook_url = st.secrets.get("GAS_WEBAPP_URL", "")
+              if gas_webhook_url:
+                  response = requests.post(gas_webhook_url, json=payload, timeout=15)
+                  
+                  if response.status_code == 200:
+                    res_data = response.json()
+                    if res_data.get("status") == "success":
+                      st.success(f"✅ {res_data.get('message')}")
+                      st.balloons()
+                    else:
+                      st.error(f"⚠️ خطأ من البوت: {res_data.get('message')}")
+                  else:
+                    st.error("فشل الاتصال بالخادم السحابي للبوت.")
+              else:
+                  st.error("⚠️ يرجى التأكد من إضافة 'GAS_WEBAPP_URL' في إعدادات secrets.")
+                
+            except Exception as e:
+              st.error(f"حدث خطأ أثناء التواصل مع البوت: {e}")
+
   st.stop()
 
 
@@ -702,7 +761,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get(
 # ==========================================
 if not st.session_state.get("source_file_id"):
   col_t, col_l = st.columns([5, 1])
-  col_t.title("⚙️ 12-Step AI Suite")
+  col_t.title("⚙️️ 12-Step AI Suite")
   if col_l.button("🚪 Logout", use_container_width=True):
     st.session_state.clear()
     st.rerun()
