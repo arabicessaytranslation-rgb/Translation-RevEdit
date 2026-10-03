@@ -22,7 +22,7 @@ except ImportError:
 # ==========================================
 # 1. CONFIGURATION, SECRETS & CUSTOM CSS
 # ==========================================
-st.set_page_config(page_title="12-Step AI Suite: Workflow Portal", layout="wide")
+st.set_page_config(page_title="12-Step AI Suite: Workflow Portal", layout="wide", initial_sidebar_state="collapsed")
 
 def apply_custom_css():
     st.markdown("""
@@ -74,14 +74,17 @@ def apply_custom_css():
 
 apply_custom_css()
 
+# Google Sheets Configuration
 GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
 GLOSSARY_RANGE = "'المصطلحات'!A:D"
 GLOSSARY_DATA_RANGE = "'المصطلحات'!C:D"
 SESSIONS_RANGE = "'Sessions'!A:D"
 VOLUNTEERS_RANGE = "'Volunteers'!A:D"
 ASSIGNMENTS_RANGE = "'Assignments'!A:E"
-LOCK_TIMEOUT_SECONDS = 14400 
 
+LOCK_TIMEOUT_SECONDS = 14400 # 4 hours before a lock naturally expires
+
+# AI Parameters
 BATCH_SIZE = 6
 MAX_RETRIES_PER_MODEL = 3
 BASE_BACKOFF_SECONDS = 2.0
@@ -125,7 +128,8 @@ def fetch_volunteers():
                     email, name, role, status = r[0].strip().lower(), r[1], r[2].lower(), r[3]
                     volunteers[email] = {"name": name, "role": role, "status": status}
         return volunteers
-    except Exception: return {}
+    except Exception:
+        return {}
 
 def overwrite_sheet_data(range_name, data_matrix):
     sheets_service.spreadsheets().values().clear(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=range_name).execute()
@@ -140,10 +144,10 @@ def fetch_assignments():
         assignments = []
         if len(rows) > 1:
             for idx, r in enumerate(rows[1:]):
-                r.extend([""] * (5 - len(r))) # Pad empty cells
+                r.extend([""] * (5 - len(r))) # Pad empty cells for safety
                 assignments.append({
                     "row_index": idx + 2,
-                    "doc_id": r[0],
+                    "doc_id": r[0].strip(),
                     "doc_name": r[1],
                     "translator": r[2].lower().strip(),
                     "reviewer": r[3].lower().strip(),
@@ -205,6 +209,7 @@ def login_screen():
 
 if not login_screen(): st.stop()
 
+# Initialize core session variables securely
 if 'processed_data' not in st.session_state: st.session_state['processed_data'] = None
 if 'source_file_id' not in st.session_state: st.session_state['source_file_id'] = None
 if 'session_row_index' not in st.session_state: st.session_state['session_row_index'] = None
@@ -221,66 +226,75 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
         st.session_state.clear(); st.rerun()
         
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📡 Live Radar", "👥 Volunteers", "📖 Glossary", "📢 Broadcast", "🗂️️ Assignment Desk"
+        "📡 Live Radar", "👥 Volunteers", "📖 Glossary", "📢 Broadcast", "🗂 Assignment Desk"
     ])
     
     # --- TAB 1: LIVE RADAR ---
     with tab1:
         st.subheader("Active Document Locks")
-        res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
-        session_rows = res.get('values', [])
-        active_locks = False
-        if len(session_rows) > 1:
-            for idx, row in enumerate(session_rows[1:]): 
-                if len(row) > 1 and row[1]: 
-                    active_locks = True
-                    doc_id, locked_by = row[0], row[1]
-                    ts = float(row[2]) if len(row) > 2 and row[2] else 0
-                    time_locked = round((time.time() - ts) / 60, 1) if ts else 0
-                    
-                    with st.container(border=True):
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.markdown(f"🔒 Locked by **{locked_by}** for `{time_locked} minutes`")
-                            st.caption(f"Doc ID: {doc_id}")
-                        with col2:
-                            if st.button("🧨 Kill Lock", key=f"kill_{idx}", use_container_width=True):
-                                sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{idx+2}:D{idx+2}", valueInputOption="USER_ENTERED", body={'values': [["", "", "", ""]]}).execute()
-                                st.rerun()
-        if not active_locks:
-            st.info("No active sessions right now. All clear!")
+        try:
+            res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
+            session_rows = res.get('values', [])
+            active_locks = False
+            if len(session_rows) > 1:
+                for idx, row in enumerate(session_rows[1:]): 
+                    if len(row) > 1 and row[1]: 
+                        active_locks = True
+                        doc_id, locked_by = row[0], row[1]
+                        ts = float(row[2]) if len(row) > 2 and row[2] else 0
+                        time_locked = round((time.time() - ts) / 60, 1) if ts else 0
+                        
+                        with st.container(border=True):
+                            col_l1, col_l2 = st.columns([3, 1])
+                            with col_l1:
+                                st.markdown(f"🔒 Locked by **{locked_by}** for `{time_locked} minutes`")
+                                st.caption(f"Doc ID: {doc_id}")
+                            with col_l2:
+                                if st.button("🧨 Kill Lock", key=f"kill_{idx}", use_container_width=True):
+                                    sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{idx+2}:D{idx+2}", valueInputOption="USER_ENTERED", body={'values': [["", "", "", ""]]}).execute()
+                                    st.rerun()
+            if not active_locks:
+                st.info("No active sessions right now. All clear!")
+        except Exception as e:
+            st.error(f"Error fetching radar: {e}")
 
     # --- TAB 2: VOLUNTEERS DATABASE ---
     with tab2:
         st.subheader("Manage Volunteer Access")
-        res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=VOLUNTEERS_RANGE).execute()
-        vol_data = res.get('values', [])
-        if not vol_data: vol_data = [["Email", "Name", "Role", "Status"]]
-        df_vol = pd.DataFrame(vol_data[1:], columns=vol_data[0])
-        edited_vol = st.data_editor(df_vol, num_rows="dynamic", use_container_width=True,
-            column_config={
-                "Role": st.column_config.SelectboxColumn("Role", options=["translator", "reviewer", "admin"], required=True),
-                "Status": st.column_config.SelectboxColumn("Status", options=["Active", "Suspended"], required=True)
-            })
-        if st.button("💾 Save Volunteers", type="primary"):
-            overwrite_sheet_data(VOLUNTEERS_RANGE, [edited_vol.columns.tolist()] + edited_vol.fillna("").values.tolist())
-            st.success("Volunteers database updated!")
+        try:
+            res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=VOLUNTEERS_RANGE).execute()
+            vol_data = res.get('values', [])
+            if not vol_data: vol_data = [["Email", "Name", "Role", "Status"]]
+            df_vol = pd.DataFrame(vol_data[1:], columns=vol_data[0])
+            edited_vol = st.data_editor(df_vol, num_rows="dynamic", use_container_width=True,
+                column_config={
+                    "Role": st.column_config.SelectboxColumn("Role", options=["translator", "reviewer", "admin"], required=True),
+                    "Status": st.column_config.SelectboxColumn("Status", options=["Active", "Suspended"], required=True)
+                })
+            if st.button("💾 Save Volunteers", type="primary"):
+                overwrite_sheet_data(VOLUNTEERS_RANGE, [edited_vol.columns.tolist()] + edited_vol.fillna("").values.tolist())
+                st.success("Volunteers database updated!")
+        except Exception as e:
+            st.error(f"Error fetching volunteers: {e}")
 
     # --- TAB 3: GLOSSARY COMMAND CENTER ---
     with tab3:
         st.subheader("Live Terminology Editor")
-        res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_RANGE).execute()
-        glos_data = res.get('values', [])
-        headers = ["ID", "Category", "English", "Arabic"]
-        rows_to_display = glos_data[1:] if (glos_data and len(glos_data[0])==4 and not glos_data[0][0].isdigit()) else glos_data
-        cleaned_rows = [list(row) + [""] * (4 - len(row)) for row in rows_to_display]
-        if not cleaned_rows: cleaned_rows = [["1", "General", "", ""]]
-        df_glos = pd.DataFrame(cleaned_rows, columns=headers)
-        edited_glos = st.data_editor(df_glos, num_rows="dynamic", use_container_width=True)
-        if st.button("💾 Sync Glossary to AI", type="primary"):
-            overwrite_sheet_data(GLOSSARY_RANGE, [edited_glos.columns.tolist()] + edited_glos.fillna("").values.tolist())
-            st.success("Glossary synced successfully!")
-            st.cache_data.clear()
+        try:
+            res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_RANGE).execute()
+            glos_data = res.get('values', [])
+            headers = ["ID", "Category", "English", "Arabic"]
+            rows_to_display = glos_data[1:] if (glos_data and len(glos_data[0])==4 and not glos_data[0][0].isdigit()) else glos_data
+            cleaned_rows = [list(row) + [""] * (4 - len(row)) for row in rows_to_display]
+            if not cleaned_rows: cleaned_rows = [["1", "General", "", ""]]
+            df_glos = pd.DataFrame(cleaned_rows, columns=headers)
+            edited_glos = st.data_editor(df_glos, num_rows="dynamic", use_container_width=True)
+            if st.button("💾 Sync Glossary to AI", type="primary"):
+                overwrite_sheet_data(GLOSSARY_RANGE, [edited_glos.columns.tolist()] + edited_glos.fillna("").values.tolist())
+                st.success("Glossary synced successfully!")
+                st.cache_data.clear()
+        except Exception as e:
+            st.error(f"Error fetching glossary: {e}")
 
     # --- TAB 4: BROADCAST DESK ---
     with tab4:
@@ -288,8 +302,32 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
         st.caption("Send a mass email to all 'Active' volunteers.")
         broadcast_subject = st.text_input("Subject")
         broadcast_message = st.text_area("Message Body", height=150)
+        
         if st.button("🚀 Send Broadcast", type="primary"):
-            st.success("Feature ready! (SMTP execution skipped in this preview).")
+            if broadcast_subject and broadcast_message:
+                vols = fetch_volunteers()
+                active_emails = [email for email, d in vols.items() if d['status'].lower() == 'active']
+                if active_emails:
+                    with st.spinner("Dispatching emails via secure SMTP..."):
+                        try:
+                            msg = EmailMessage()
+                            msg.set_content(f"12-Step Translation Project Update:\n\n{broadcast_message}")
+                            msg['Subject'] = f"[12-Step Admin] {broadcast_subject}"
+                            msg['From'] = st.secrets.get("SMTP_EMAIL", "admin@localhost")
+                            msg['To'] = st.secrets.get("SMTP_EMAIL", "admin@localhost")
+                            msg['Bcc'] = ", ".join(active_emails) 
+                            
+                            with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+                                server.login(st.secrets["SMTP_EMAIL"], st.secrets["SMTP_PASSWORD"])
+                                server.send_message(msg)
+                            st.success(f"Broadcast sent successfully to {len(active_emails)} volunteers!")
+                            st.balloons()
+                        except Exception as e:
+                            st.error(f"Failed to send email. Check your SMTP secrets. Error: {e}")
+                else:
+                    st.warning("No active volunteers found to email.")
+            else:
+                st.warning("Please enter a subject and a message.")
 
     # --- TAB 5: ASSIGNMENT DESK ---
     with tab5:
@@ -374,9 +412,9 @@ if not st.session_state.get('source_file_id'):
     my_tasks = []
     
     for task in assignments:
-        if st.session_state["app_mode"] == "Translator Mode" and task['translator'] == st.session_state['user_email'] and task['status'] == "Pending Translation":
+        if st.session_state["app_mode"] == "Translator Mode" and task.get('translator') == st.session_state['user_email'] and task.get('status') == "Pending Translation":
             my_tasks.append(task)
-        elif st.session_state["app_mode"] == "Reviewer Mode" and task['reviewer'] == st.session_state['user_email'] and task['status'] == "Pending Review":
+        elif st.session_state["app_mode"] == "Reviewer Mode" and task.get('reviewer') == st.session_state['user_email'] and task.get('status') == "Pending Review":
             my_tasks.append(task)
 
     if not my_tasks:
@@ -477,9 +515,6 @@ def release_document_lock(row_index):
         sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}", valueInputOption="USER_ENTERED", body={'values': [["", "", "", ""]]}).execute()
     except Exception: pass
 
-def send_email_notification(process_name, operator_name, operator_email):
-    pass # Implementation omitted for brevity.
-
 @st.cache_data(ttl=3600)
 def fetch_glossary():
     try:
@@ -541,7 +576,7 @@ def review_with_ai(english: str, arabic: str, glossary_text: str):
 
 def translate_batch_with_fallback(batch_segments, glossary_text):
     if not GENAI_AVAILABLE or client is None: return [translate_with_ai(s['english'], glossary_text) for s in batch_segments]
-    input_payload = "\n\n".join([f"ID: {s['id']}\nText: {s['english']}" for s in batch_segments])
+    input_payload = "\n\n".join([f"ID: {s.get('id', 0)}\nText: {s.get('english', '')}" for s in batch_segments])
     prompt = f"Expert translator for 12-step literature.\nGLOSSARY:\n{glossary_text}\nSegments:\n{input_payload}"
     for model_name in get_fallback_models():
         for attempt in range(2):
@@ -554,13 +589,13 @@ def translate_batch_with_fallback(batch_segments, glossary_text):
     
     results = []
     for s in batch_segments:
-        res = translate_with_ai(s['english'], glossary_text)
-        results.append({"id": s['id'], "arabic_translation": res['arabic_translation'], "glossary_notes": res['glossary_notes']})
+        res = translate_with_ai(s.get('english', ''), glossary_text)
+        results.append({"id": s.get('id', 0), "arabic_translation": res.get('arabic_translation', ''), "glossary_notes": res.get('glossary_notes', '')})
     return results
 
 def review_batch_with_fallback(batch_segments, glossary_text):
-    if not GENAI_AVAILABLE or client is None: return [review_with_ai(s['english'], s['arabic'], glossary_text) for s in batch_segments]
-    input_payload = "\n\n".join([f"ID: {s['id']}\nEnglish: {s['english']}\nArabic: {s['arabic']}" for s in batch_segments])
+    if not GENAI_AVAILABLE or client is None: return [review_with_ai(s.get('english', ''), s.get('arabic', ''), glossary_text) for s in batch_segments]
+    input_payload = "\n\n".join([f"ID: {s.get('id', 0)}\nEnglish: {s.get('english', '')}\nArabic: {s.get('arabic', '')}" for s in batch_segments])
     prompt = f"Expert editor for 12-step literature.\nGLOSSARY:\n{glossary_text}\nPairs:\n{input_payload}"
     for model_name in get_fallback_models():
         for attempt in range(2):
@@ -573,8 +608,8 @@ def review_batch_with_fallback(batch_segments, glossary_text):
                 
     results = []
     for s in batch_segments:
-        res = review_with_ai(s['english'], s['arabic'], glossary_text)
-        results.append({"id": s['id'], "status": res['status'], "suggested_arabic": res['suggested_arabic'], "reasoning": res['reasoning']})
+        res = review_with_ai(s.get('english', ''), s.get('arabic', ''), glossary_text)
+        results.append({"id": s.get('id', 0), "status": res.get('status', 'minor_edits'), "suggested_arabic": res.get('suggested_arabic', ''), "reasoning": res.get('reasoning', '')})
     return results
 
 def _parse_docs_elements(elements):
@@ -604,7 +639,7 @@ def smart_align(paragraphs):
     for i in range(max(len(en_paras), len(ar_paras))):
         en_obj = en_paras[i] if i < len(en_paras) else {'text': "[MISSING ENGLISH SOURCE]"}
         ar_obj = ar_paras[i] if i < len(ar_paras) else {'text': "[MISSING ARABIC TRANSLATION]", 'start': None, 'end': None}
-        aligned.append({'id': i + 1, 'english': en_obj['text'], 'arabic': ar_obj['text'], 'ar_start': ar_obj.get('start'), 'ar_end': ar_obj.get('end')})
+        aligned.append({'id': i + 1, 'english': en_obj.get('text', ''), 'arabic': ar_obj.get('text', ''), 'ar_start': ar_obj.get('start'), 'ar_end': ar_obj.get('end')})
     return aligned
 
 def push_translator(doc_id, text):
@@ -612,7 +647,9 @@ def push_translator(doc_id, text):
         reqs = [{'insertPageBreak': {'location': {'index': 1}}}, {'insertText': {'location': {'index': 1}, 'text': text + "\n\n"}}]
         docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': reqs}).execute()
         return True
-    except Exception: return False
+    except Exception as e: 
+        st.error(f"Write error: {e}")
+        return False
 
 def push_reviewer(doc_id, segments):
     try:
@@ -629,20 +666,27 @@ def push_reviewer(doc_id, segments):
 # ==========================================
 # 6. ACTIVE WORKSPACE (THE EDITOR)
 # ==========================================
-task = st.session_state['active_task']
-file_id = task['doc_id']
+
+# 🛡️ DEFENSIVE GUARD: If user hard-refreshes and loses task state, send them back to Inbox safely.
+task = st.session_state.get('active_task')
+if not task:
+    st.session_state['source_file_id'] = None
+    st.rerun()
+
+file_id = task.get('doc_id')
 
 col_h1, col_h2 = st.columns([5, 1])
-col_h1.markdown(f"## 📝 Workspace: `{task['doc_name']}`")
+col_h1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
 if col_h2.button("⬅️ Back to Inbox", use_container_width=True):
     st.session_state['active_task'] = None
+    st.session_state['source_file_id'] = None
     st.session_state['processed_data'] = None
     st.rerun()
 
-if not st.session_state['processed_data']:
+if not st.session_state.get('processed_data'):
     lock = manage_document_lock(file_id, st.session_state['user_email'])
     if lock["status"] == "blocked":
-        st.error(f"🛑 **Document In Use:** This document is currently locked by `{lock['locked_by']}`.")
+        st.error(f"🛑 **Document In Use:** This document is currently locked by `{lock.get('locked_by', 'another user')}`.")
         st.stop()
     elif lock["status"] == "recovered":
         st.session_state['session_row_index'] = lock["row_index"]
@@ -660,11 +704,11 @@ if not st.session_state['processed_data']:
             if st.session_state["app_mode"] == "Translator Mode":
                 batches = [paras[i:i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
                 for idx, batch in enumerate(batches):
-                    ai_results = translate_batch_with_fallback([{'id': j + 1, 'english': p['text']} for j, p in enumerate(batch)], glossary_data)
+                    ai_results = translate_batch_with_fallback([{'id': j + 1, 'english': p.get('text', '')} for j, p in enumerate(batch)], glossary_data)
                     for ai_res in ai_results:
                         processed_results.append({
                             "id": ai_res.get('id', 0) + (idx * BATCH_SIZE),
-                            "english": batch[ai_res.get('id', 1) - 1]['text'],
+                            "english": batch[ai_res.get('id', 1) - 1].get('text', ''),
                             "arabic_translation": ai_res.get("arabic_translation", ""),
                             "glossary_notes": ai_res.get("glossary_notes", ""),
                             "user_arabic": ai_res.get("arabic_translation", ""),
@@ -673,7 +717,7 @@ if not st.session_state['processed_data']:
                     progress_bar.progress((idx + 1) / len(batches))
             else:
                 segments = smart_align(paras)
-                normal_segs = [s for s in segments if s['english'] != "[MISSING ENGLISH SOURCE]" and s['arabic'] != "[MISSING ARABIC TRANSLATION]"]
+                normal_segs = [s for s in segments if s.get('english') != "[MISSING ENGLISH SOURCE]" and s.get('arabic') != "[MISSING ARABIC TRANSLATION]"]
                 batches = [normal_segs[i:i + BATCH_SIZE] for i in range(0, len(normal_segs), BATCH_SIZE)]
                 
                 for idx, batch in enumerate(batches):
@@ -690,17 +734,17 @@ if not st.session_state['processed_data']:
                         })
                     progress_bar.progress((idx + 1) / len(batches))
                 
-                # Handle Anomalies gracefully
+                # Handle Anomalies gracefully (Lazy AI Bypass evaluation for Reviewers)
                 for item in segments:
-                    if item['english'] == "[MISSING ENGLISH SOURCE]":
+                    if item.get('english') == "[MISSING ENGLISH SOURCE]":
                         processed_results.append({
                             "id": item.get('id'), "status": "major_rewrite", "english": "[MISSING]",
                             "original_arabic": item.get('arabic', ''), "suggested_arabic": item.get('arabic', ''),
-                            "reasoning": "⚠️ Orphaned Arabic block.", 
+                            "reasoning": "⚠️️ Orphaned Arabic block.", 
                             "ar_start": item.get('ar_start'), "ar_end": item.get('ar_end'), 
                             "user_arabic": item.get('arabic', ''), "is_approved": False
                         })
-                    elif item['arabic'] == "[MISSING ARABIC TRANSLATION]":
+                    elif item.get('arabic') == "[MISSING ARABIC TRANSLATION]":
                         trans_res = translate_with_ai(item.get('english', ''), glossary_data)
                         t_arabic = trans_res.get("arabic_translation", "")
                         processed_results.append({
@@ -721,7 +765,6 @@ approved_count, finalized_data, state_modified = 0, [], False
 st.divider()
 
 for i, item in enumerate(st.session_state['processed_data']):
-    # DEFENSIVE PROGRAMMING: Using .get() for everything to prevent KeyErrors from legacy cache data
     seg_id = item.get('id', i + 1)
     status_val = item.get('status', 'minor_edits')
     eng_txt = item.get('english', '')
@@ -792,19 +835,18 @@ if approved_count == total_segments and total_segments > 0:
         if st.button("🚀 Push to Drive & Close Task", type="primary", use_container_width=True):
             with st.spinner("Processing Drive updates and concluding workflow..."):
                 if st.session_state["app_mode"] == "Translator Mode":
-                    # تم تصحيح اسم الدالة هنا
                     success = push_translator(file_id, "\n\n".join(finalized_data))
                     if success:
-                        new_status = "Completed" if task['translator'] == task['reviewer'] else "Pending Review"
+                        new_status = "Completed" if task.get('translator') == task.get('reviewer') else "Pending Review"
                         update_assignment_status(file_id, new_status)
                 else:
-                    # تم تصحيح اسم الدالة هنا
                     success = push_reviewer(file_id, finalized_data)
                     if success: update_assignment_status(file_id, "Completed")
                 
                 if success:
-                    release_document_lock(st.session_state['session_row_index'])
+                    release_document_lock(st.session_state.get('session_row_index'))
                     st.session_state['active_task'] = None
+                    st.session_state['source_file_id'] = None
                     st.session_state['processed_data'] = None
                     st.session_state['review_unlocked'] = False
                     st.balloons()
