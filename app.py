@@ -82,7 +82,7 @@ SESSIONS_RANGE = "'Sessions'!A:D"
 VOLUNTEERS_RANGE = "'Volunteers'!A:D"
 ASSIGNMENTS_RANGE = "'Assignments'!A:E"
 
-LOCK_TIMEOUT_SECONDS = 14400 # 4 hours before a lock naturally expires
+LOCK_TIMEOUT_SECONDS = 14400 
 
 # AI Parameters
 BATCH_SIZE = 6
@@ -144,7 +144,7 @@ def fetch_assignments():
         assignments = []
         if len(rows) > 1:
             for idx, r in enumerate(rows[1:]):
-                r.extend([""] * (5 - len(r))) # Pad empty cells for safety
+                r.extend([""] * (5 - len(r)))
                 assignments.append({
                     "row_index": idx + 2,
                     "doc_id": r[0].strip(),
@@ -209,7 +209,7 @@ def login_screen():
 
 if not login_screen(): st.stop()
 
-# Initialize core session variables securely
+# Initialize core session variables
 if 'processed_data' not in st.session_state: st.session_state['processed_data'] = None
 if 'source_file_id' not in st.session_state: st.session_state['source_file_id'] = None
 if 'session_row_index' not in st.session_state: st.session_state['session_row_index'] = None
@@ -229,7 +229,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
         "📡 Live Radar", "👥 Volunteers", "📖 Glossary", "📢 Broadcast", "🗂 Assignment Desk"
     ])
     
-    # --- TAB 1: LIVE RADAR ---
     with tab1:
         st.subheader("Active Document Locks")
         try:
@@ -243,7 +242,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
                         doc_id, locked_by = row[0], row[1]
                         ts = float(row[2]) if len(row) > 2 and row[2] else 0
                         time_locked = round((time.time() - ts) / 60, 1) if ts else 0
-                        
                         with st.container(border=True):
                             col_l1, col_l2 = st.columns([3, 1])
                             with col_l1:
@@ -258,7 +256,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
         except Exception as e:
             st.error(f"Error fetching radar: {e}")
 
-    # --- TAB 2: VOLUNTEERS DATABASE ---
     with tab2:
         st.subheader("Manage Volunteer Access")
         try:
@@ -277,7 +274,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
         except Exception as e:
             st.error(f"Error fetching volunteers: {e}")
 
-    # --- TAB 3: GLOSSARY COMMAND CENTER ---
     with tab3:
         st.subheader("Live Terminology Editor")
         try:
@@ -296,7 +292,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
         except Exception as e:
             st.error(f"Error fetching glossary: {e}")
 
-    # --- TAB 4: BROADCAST DESK ---
     with tab4:
         st.subheader("Team Broadcast System")
         st.caption("Send a mass email to all 'Active' volunteers.")
@@ -329,7 +324,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
             else:
                 st.warning("Please enter a subject and a message.")
 
-    # --- TAB 5: ASSIGNMENT DESK ---
     with tab5:
         st.subheader("Workflow Assignment Desk")
         st.info("💡 **Note:** Translator assignment is optional. If left unassigned (Bypass), the AI will translate the entire document and route it directly to the Reviewer's inbox.")
@@ -429,11 +423,11 @@ if not st.session_state.get('source_file_id'):
                     st.session_state['active_task'] = task
                     st.session_state['source_file_id'] = task.get('doc_id')
                     st.rerun()
-    st.stop() # Wait for user to pick a task
+    st.stop() 
 
 
 # ==========================================
-# 5. AI ENGINE & DOCUMENT PARSING
+# 5. AI ENGINE & DOCUMENT PARSING (RESTORED ROBUST ENGINE)
 # ==========================================
 client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"]) if GENAI_AVAILABLE else None
 safety_settings = []
@@ -471,10 +465,23 @@ class ReviewBatchItem(BaseModel):
 class ReviewBatchResult(BaseModel):
     items: list[ReviewBatchItem]
 
+@st.cache_resource(ttl=3600)
 def get_fallback_models():
+    # Dynamically fetch available models to prevent 404 errors
     secret_model = st.secrets.get("ACTIVE_MODEL", "").strip()
     if secret_model: return [secret_model]
-    return ["gemini-2.5-flash", "gemini-1.5-flash"] 
+    if GENAI_AVAILABLE and client is not None:
+        try:
+            available_flash_models = []
+            for m in client.models.list():
+                clean_name = m.name.replace("models/", "")
+                if "flash" in clean_name.lower() and not any(tag in clean_name.lower() for tag in ["legacy", "embed", "imagen"]):
+                    available_flash_models.append(clean_name)
+            available_flash_models.sort(reverse=True)
+            if available_flash_models: return available_flash_models
+        except Exception:
+            pass
+    return ["gemini-2.5-flash", "gemini-1.5-flash"]
 
 def manage_document_lock(file_id: str, user_email: str):
     try:
@@ -668,25 +675,61 @@ Pairs to Review:
         results.append({"id": s.get('id', 0), "status": res.get('status', 'minor_edits'), "suggested_arabic": res.get('suggested_arabic', ''), "reasoning": res.get('reasoning', '')})
     return results
 
+# THE CRITICAL FIX: RESTORED FULL DOCUMENT PARSER FOR TABS & TABLES
 def _parse_docs_elements(elements):
     paras = []
     for elem in elements:
         if 'paragraph' in elem:
-            para_text = "".join([run.get('textRun', {}).get('content', '') for run in elem.get('paragraph', {}).get('elements', []) if 'textRun' in run])
-            if re.search(r'[a-zA-Z\u0600-\u06FF]', para_text.strip()): 
-                paras.append({'text': para_text.strip(), 'start': elem.get('startIndex'), 'end': elem.get('endIndex')})
+            para_text = ""
+            start_idx = elem.get('startIndex')
+            end_idx = elem.get('endIndex')
+            for run in elem.get('paragraph', {}).get('elements', []):
+                if 'textRun' in run:
+                    para_text += run.get('textRun', {}).get('content', '')
+            clean_text = para_text.strip()
+            if bool(re.search(r'[a-zA-Z\u0600-\u06FF]', clean_text)): 
+                paras.append({'text': clean_text, 'start': start_idx, 'end': end_idx})
         elif 'table' in elem:
             for row in elem.get('table', {}).get('tableRows', []):
                 for cell in row.get('tableCells', []):
                     paras.extend(_parse_docs_elements(cell.get('content', [])))
     return paras
 
-def extract_text_from_drive(file_id):
+def extract_text_from_drive(file_id: str, is_retry=False):
     try:
-        document = docs_service.documents().get(documentId=file_id).execute()
-        return _parse_docs_elements(document.get('body', {}).get('content', []))
+        docs_svc, drive_svc, _ = get_google_services()
+        file_meta = drive_svc.files().get(fileId=file_id, fields="mimeType").execute()
+        mime_type = file_meta.get("mimeType")
+
+        if mime_type == 'application/vnd.google-apps.document':
+            try: document = docs_svc.documents().get(documentId=file_id, includeTabsContent=True).execute()
+            except Exception: document = docs_svc.documents().get(documentId=file_id).execute()
+
+            all_paras = []
+            def sweep_doc_obj(doc_obj):
+                temp_paras = []
+                temp_paras.extend(_parse_docs_elements(doc_obj.get('body', {}).get('content', [])))
+                for footer in doc_obj.get('footers', {}).values():
+                    temp_paras.extend(_parse_docs_elements(footer.get('content', [])))
+                for header in doc_obj.get('headers', {}).values():
+                    temp_paras.extend(_parse_docs_elements(header.get('content', [])))
+                return temp_paras
+
+            tabs = document.get('tabs', [])
+            if tabs:
+                for tab in tabs: all_paras.extend(sweep_doc_obj(tab.get('documentTab', {})))
+            else:
+                all_paras.extend(sweep_doc_obj(document))
+            return all_paras
+        else:
+            st.error(f"Unsupported file type: {mime_type}. Please use Google Docs.")
+            return None
     except Exception as e:
-        st.error(f"Error reading doc: {e}")
+        err_str = str(e)
+        if ("Broken pipe" in err_str or "Errno 32" in err_str) and not is_retry:
+            get_google_services.clear()
+            return extract_text_from_drive(file_id, is_retry=True)
+        st.error(f"Could not read document from Drive. Error: {e}")
         return None
 
 def smart_align(paragraphs):
@@ -698,25 +741,34 @@ def smart_align(paragraphs):
         aligned.append({'id': i + 1, 'english': en_obj.get('text', ''), 'arabic': ar_obj.get('text', ''), 'ar_start': ar_obj.get('start'), 'ar_end': ar_obj.get('end')})
     return aligned
 
-def push_translator(doc_id, text):
+def push_to_drive_translator(document_id, final_arabic_text):
+    docs_svc, _, _ = get_google_services()
     try:
-        reqs = [{'insertPageBreak': {'location': {'index': 1}}}, {'insertText': {'location': {'index': 1}, 'text': text + "\n\n"}}]
-        docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': reqs}).execute()
-        return True
-    except Exception as e: 
-        st.error(f"Write error: {e}")
-        return False
-
-def push_reviewer(doc_id, segments):
-    try:
-        reqs = []
-        for s in sorted([seg for seg in segments if seg.get('ar_start') is not None], key=lambda x: x['ar_start'], reverse=True):
-            reqs.append({'deleteContentRange': {'range': {'startIndex': s['ar_start'], 'endIndex': s['ar_end'] - 1}}})
-            reqs.append({'insertText': {'location': {'index': s['ar_start']}, 'text': s.get('final_arabic', '')}})
-        if reqs: docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': reqs}).execute()
+        requests = [
+            {'insertPageBreak': {'location': {'index': 1}}},
+            {'insertText': {'location': {'index': 1}, 'text': final_arabic_text + "\n\n"}}
+        ]
+        docs_svc.documents().batchUpdate(documentId=document_id, body={'requests': requests}).execute()
         return True
     except Exception as e:
-        st.error(f"Failed to apply revisions. Error: {e}")
+        st.error(f"Failed to push to Drive. Error: {e}")
+        return False
+
+def push_to_drive_reviewer(document_id, approved_segments):
+    docs_svc, _, _ = get_google_services()
+    try:
+        valid_segments = [seg for seg in approved_segments if seg.get('ar_start') is not None and seg.get('ar_end') is not None]
+        valid_segments.sort(key=lambda x: x['ar_start'], reverse=True)
+        requests = []
+        for seg in valid_segments:
+            requests.append({'deleteContentRange': {'range': {'startIndex': seg['ar_start'], 'endIndex': seg['ar_end'] - 1}}})
+            requests.append({'insertText': {'location': {'index': seg['ar_start']}, 'text': seg.get('final_arabic', '')}})
+            
+        if requests:
+            docs_svc.documents().batchUpdate(documentId=document_id, body={'requests': requests}).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to push to Drive. Error: {e}")
         return False
 
 # ==========================================
@@ -762,7 +814,6 @@ if not st.session_state.get('processed_data'):
             processed_results = []
             progress_bar = st.progress(0)
             
-            # --- THE FIX: CLEAN AI BYPASS DRAFTING ---
             if run_translation_engine:
                 if is_bypass_task:
                     st.info("🤖 **AI Bypass Mode:** Generating a fresh AI draft directly for your review...")
@@ -771,11 +822,17 @@ if not st.session_state.get('processed_data'):
                     
                 batches = [paras[i:i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
                 for idx, batch in enumerate(batches):
-                    ai_results = translate_batch_with_fallback([{'id': j + 1, 'english': p.get('text', '')} for j, p in enumerate(batch)], glossary_data)
+                    batch_payload = [{'id': j + 1, 'english': p.get('text', '')} for j, p in enumerate(batch)]
+                    ai_results = translate_batch_with_fallback(batch_payload, glossary_data)
+                    
                     for ai_res in ai_results:
+                        ai_id = int(ai_res.get('id', 1))
+                        array_index = ai_id - 1
+                        eng_text = batch[array_index].get('text', '') if 0 <= array_index < len(batch) else batch[0].get('text', '')
+                        
                         processed_results.append({
-                            "id": ai_res.get('id', 0) + (idx * BATCH_SIZE),
-                            "english": batch[ai_res.get('id', 1) - 1].get('text', ''),
+                            "id": ai_id + (idx * BATCH_SIZE),
+                            "english": eng_text,
                             "arabic_translation": ai_res.get("arabic_translation", ""),
                             "glossary_notes": ai_res.get("glossary_notes", ""),
                             "user_arabic": ai_res.get("arabic_translation", ""),
@@ -783,7 +840,6 @@ if not st.session_state.get('processed_data'):
                         })
                     progress_bar.progress((idx + 1) / len(batches))
             
-            # --- NORMAL REVIEWER MODE ---
             else:
                 st.info("Extracting blocks and comparing with original translation...")
                 segments = smart_align(paras)
@@ -828,6 +884,8 @@ if not st.session_state.get('processed_data'):
             save_draft_to_sheet(file_id, st.session_state.get('user_email'), st.session_state.get('session_row_index'), processed_results)
             st.session_state['processed_data'] = processed_results
             st.rerun()
+        else:
+            st.warning("⚠️ No valid readable text found in this document. Please ensure it's not completely blank.")
 
 # --- EDITOR UI ---
 approved_count, finalized_data, state_modified = 0, [], False
@@ -908,7 +966,7 @@ if approved_count == total_segments and total_segments > 0:
         if st.button("🚀 Push to Drive & Close Task", type="primary", use_container_width=True):
             with st.spinner("Processing Drive updates and concluding workflow..."):
                 if run_translation_engine:
-                    success = push_translator(file_id, "\n\n".join(finalized_data))
+                    success = push_to_drive_translator(file_id, "\n\n".join(finalized_data))
                     if success:
                         if is_bypass_task or (task.get('translator') == task.get('reviewer')):
                             new_status = "Completed"
@@ -916,7 +974,7 @@ if approved_count == total_segments and total_segments > 0:
                             new_status = "Pending Review"
                         update_assignment_status(file_id, new_status)
                 else:
-                    success = push_reviewer(file_id, finalized_data)
+                    success = push_to_drive_reviewer(file_id, finalized_data)
                     if success: update_assignment_status(file_id, "Completed")
                 
                 if success:
