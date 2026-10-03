@@ -675,6 +675,9 @@ if not task:
 
 file_id = task.get('doc_id')
 
+# 👇 هذا هو السطر المفقود الذي يجب إضافته هنا 👇
+glossary_data = fetch_glossary()
+
 col_h1, col_h2 = st.columns([5, 1])
 col_h1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
 if col_h2.button("⬅️ Back to Inbox", use_container_width=True):
