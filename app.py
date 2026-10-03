@@ -87,7 +87,8 @@ def apply_custom_css():
             line-height: 2.2;
             text-align: justify;
             direction: rtl;
-            background-color: #ffffff;
+            background-color: #ffffff !important;
+            color: #0f172a !important;
             padding: 30px;
             border-radius: 10px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.05);
@@ -761,7 +762,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get(
 # ==========================================
 if not st.session_state.get("source_file_id"):
   col_t, col_l = st.columns([5, 1])
-  col_t.title("⚙️️ 12-Step AI Suite")
+  col_t.title("⚙ 12-Step AI Suite")
   if col_l.button("🚪 Logout", use_container_width=True):
     st.session_state.clear()
     st.rerun()
@@ -1173,18 +1174,21 @@ def extract_text_from_drive(file_id: str, is_retry=False):
     return None
 
 def upload_audio_to_drive(uploaded_file, doc_name, parent_folder_id):
-  """Uploads the MP3 file directly to Google Drive with the exact document title."""
+  """Uploads audio file (MP3 or WAV) directly to Google Drive."""
   try:
     _, drive_svc, _ = get_google_services()
     clean_title = re.sub(r'[\\/*?:"<>|]', '', doc_name).strip()
-    file_name = f"{clean_title}.mp3"
+    
+    file_ext = uploaded_file.name.split('.')[-1] if hasattr(uploaded_file, 'name') and uploaded_file.name else 'wav'
+    mime_type = uploaded_file.type if hasattr(uploaded_file, 'type') and uploaded_file.type else 'audio/wav'
+    file_name = f"{clean_title}.{file_ext}"
 
     file_metadata = {
         'name': file_name,
         'parents': [parent_folder_id],
-        'mimeType': 'audio/mpeg',
+        'mimeType': mime_type,
     }
-    media = MediaIoBaseUpload(io.BytesIO(uploaded_file.read()), mimetype='audio/mpeg', resumable=True)
+    media = MediaIoBaseUpload(io.BytesIO(uploaded_file.read()), mimetype=mime_type, resumable=True)
     drive_file = drive_svc.files().create(body=file_metadata, media_body=media, fields='id, webViewLink, webContentLink').execute()
     return drive_file.get('webViewLink')
   except Exception as e:
@@ -1239,7 +1243,7 @@ file_id = task.get("doc_id")
 app_mode = st.session_state.get("app_mode")
 
 # ---------------------------------------------------------
-# RECORDER WORKSPACE (READ-ONLY + AUDIO UPLOAD)
+# RECORDER WORKSPACE (READ-ONLY + AUDIO UPLOAD/RECORD)
 # ---------------------------------------------------------
 if app_mode == "Recorder Mode":
     col_h1, col_h2 = st.columns([5, 1])
@@ -1259,14 +1263,24 @@ if app_mode == "Recorder Mode":
         
         st.divider()
         st.subheader("📤 Submit Audio Recording")
-        audio_file = st.file_uploader("Upload your finalized MP3 file here (Max 50MB):", type=["mp3"])
         
-        if audio_file is not None:
-            st.audio(audio_file)
+        st.info("💡 يمكنك التسجيل مباشرة من المتصفح، أو إرفاق ملف جاهز إذا قمت بتسجيله مسبقاً.")
+        
+        col_rec, col_up = st.columns(2)
+        with col_rec:
+            recorded_audio = st.audio_input("🎙️ Record directly from your mic:")
+        with col_up:
+            uploaded_audio = st.file_uploader("📂 Or upload a ready audio file (MP3/WAV):", type=["mp3", "wav", "m4a"])
+        
+        final_audio_file = recorded_audio if recorded_audio else uploaded_audio
+        
+        if final_audio_file is not None:
+            st.success("✅ Audio Ready for submission!")
+            st.audio(final_audio_file)
             if st.button("🚀 Upload & Complete Task", type="primary", use_container_width=True):
                 with st.spinner("Uploading to Google Drive... Please do not close the window."):
                     parent_folder = st.session_state.get("active_task_parent_folder", "")
-                    file_link = upload_audio_to_drive(audio_file, task.get("doc_name"), parent_folder)
+                    file_link = upload_audio_to_drive(final_audio_file, task.get("doc_name"), parent_folder)
                     
                     if file_link:
                         update_assignment_audio_link(file_id, file_link)
