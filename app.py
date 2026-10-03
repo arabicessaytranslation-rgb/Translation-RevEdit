@@ -314,15 +314,437 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get(
     st.session_state.clear()
     st.rerun()
 
-  tab1, tab2, tab3, tab4, tab5 = st.tabs([
-      "📡 Live Radar",
+  # 6 Full Tabs for the Admin
+  tab_track, tab_assign, tab_vols, tab_glos, tab_radar, tab_bcast = st.tabs([
+      "📊 Task Tracker",
+      "🗂️ Assignment Desk",
       "👥 Volunteers",
       "📖 Glossary",
+      "📡 Live Radar",
       "📢 Broadcast",
-      "🗂 Assignment Desk",
   ])
 
-  with tab1:
+  vols = fetch_volunteers()
+  all_assignments = fetch_assignments()
+
+  # Helper to display clean names instead of bare emails
+  def format_vol_label(email_key):
+    if not email_key or email_key.startswith("["):
+      return email_key
+    v_info = vols.get(email_key, {})
+    v_name = v_info.get("name")
+    return f"{v_name} ({email_key})" if v_name else email_key
+
+  # =========================================================
+  # TAB 1: TASK TRACKER (THE COMPLETE PIPELINE OVERVIEW)
+  # =========================================================
+  with tab_track:
+    st.subheader("📊 Live Assignment Tracker")
+
+    if not all_assignments:
+      st.info(
+          "No tasks assigned yet. Go to '🗂️ Assignment Desk' to assign your"
+          " first document."
+      )
+    else:
+      # Top KPI Metrics Cards
+      total_count = len(all_assignments)
+      p_trans_count = sum(
+          1 for a in all_assignments if a.get("status") == "Pending Translation"
+      )
+      p_rev_count = sum(
+          1 for a in all_assignments if a.get("status") == "Pending Review"
+      )
+      comp_count = sum(
+          1 for a in all_assignments if a.get("status") == "Completed"
+      )
+
+      k1, k2, k3, k4 = st.columns(4)
+      k1.metric("Total Assigned", total_count)
+      k2.metric("Pending Translation", p_trans_count)
+      k3.metric("Pending Review", p_rev_count)
+      k4.metric("Completed", comp_count)
+
+      st.divider()
+
+      # Filter & Search Controls
+      col_srch, col_st = st.columns([3, 1])
+      srch = (
+          col_srch.text_input(
+              "🔍 Search tasks by document title, translator, or reviewer:", ""
+          )
+          .strip()
+          .lower()
+      )
+      st_filter = col_st.selectbox(
+          "Filter by Status:",
+          ["All", "Pending Translation", "Pending Review", "Completed"],
+      )
+
+      filtered_tasks = []
+      for a in all_assignments:
+        match_st = (st_filter == "All") or (a.get("status") == st_filter)
+        match_txt = (
+            srch in a.get("doc_name", "").lower()
+            or srch in a.get("translator", "").lower()
+            or srch in a.get("reviewer", "").lower()
+            or srch in vols.get(a.get("translator"), {}).get("name", "").lower()
+            or srch in vols.get(a.get("reviewer"), {}).get("name", "").lower()
+        )
+        if match_st and match_txt:
+          filtered_tasks.append(a)
+
+      if not filtered_tasks:
+        st.warning("No assignments match your search filter.")
+      else:
+        for t in filtered_tasks:
+          d_id = t.get("doc_id")
+          d_name = t.get("doc_name")
+          t_em = t.get("translator")
+          r_em = t.get("reviewer")
+          status = t.get("status")
+
+          t_disp = (
+              f"{vols.get(t_em, {}).get('name', t_em)} ({t_em})"
+              if t_em
+              else "🤖 AI Bypass (No Translator)"
+          )
+          r_disp = (
+              f"{vols.get(r_em, {}).get('name', r_em)} ({r_em})"
+              if r_em
+              else "Unassigned"
+          )
+
+          badge = (
+              "🟡"
+              if status == "Pending Translation"
+              else ("🔵" if status == "Pending Review" else "🟢")
+          )
+
+          with st.container(border=True):
+            ci, ca = st.columns([4, 1.2])
+            with ci:
+              st.markdown(f"**📄 {d_name}** &nbsp;&nbsp; `{badge} {status}`")
+              st.caption(
+                  f"**Translator:** {t_disp} &nbsp;|&nbsp; **Reviewer:**"
+                  f" {r_disp} &nbsp;|&nbsp; **ID:** `{d_id}`"
+              )
+            with ca:
+              with st.popover("⚙️ Update Status", use_container_width=True):
+                st.write(f"Task: `{d_name[:25]}...`")
+                stat_options = [
+                    "Pending Translation",
+                    "Pending Review",
+                    "Completed",
+                ]
+                cur_idx = (
+                    stat_options.index(status) if status in stat_options else 0
+                )
+                new_s = st.selectbox(
+                    "Set New Status:", stat_options, index=cur_idx, key=f"s_{d_id}"
+                )
+                if st.button(
+                    "Save Status",
+                    key=f"b_up_{d_id}",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                  update_assignment_status(d_id, new_s)
+                  st.success("Status updated!")
+                  time.sleep(0.5)
+                  st.rerun()
+
+  # =========================================================
+  # TAB 2: ASSIGNMENT DESK (FOLDER SCANNER & DISPATCHER)
+  # =========================================================
+  with tab_assign:
+    st.subheader("🗂️ Drive Document Dispatcher")
+    st.info(
+        "💡 **Assignment Rule:** Assigning a Translator is optional. Leaving"
+        " Translator on **Bypass** routes the document through the AI direct"
+        " draft engine and lands it straight into the Reviewer's inbox."
+    )
+
+    t_options = ["[Optional] Bypass - AI Only"] + [
+        e
+        for e, d in vols.items()
+        if d.get("role") in ["translator", "admin"]
+        and d.get("status", "").lower() == "active"
+    ]
+    r_options = ["[Mandatory] Select Reviewer..."] + [
+        e
+        for e, d in vols.items()
+        if d.get("role") in ["reviewer", "admin"]
+        and d.get("status", "").lower() == "active"
+    ]
+
+    assigned_map = {a.get("doc_id"): a for a in all_assignments}
+
+    try:
+      folder_res = (
+          drive_service.files()
+          .list(
+              q="mimeType='application/vnd.google-apps.folder' and trashed=false",
+              fields="files(id, name)",
+          )
+          .execute()
+      )
+      all_folders = folder_res.get("files", [])
+      year_folders = [
+          f
+          for f in all_folders
+          if "Edition" in f["name"] or "202" in f["name"]
+      ]
+
+      if year_folders:
+        col_yr, col_mo, col_scan = st.columns([2, 2, 1])
+        year_options = {f["name"]: f["id"] for f in year_folders}
+        sel_year = col_yr.selectbox(
+            "📁 1. Year Folder:", list(year_options.keys())
+        )
+        year_id = year_options[sel_year]
+
+        month_res = (
+            drive_service.files()
+            .list(
+                q=(
+                    f"'{year_id}' in parents and"
+                    " mimeType='application/vnd.google-apps.folder' and"
+                    " trashed=false"
+                ),
+                fields="files(id, name)",
+            )
+            .execute()
+        )
+        month_folders = month_res.get("files", [])
+
+        if month_folders:
+          month_options = {f["name"]: f["id"] for f in month_folders}
+          sel_month = col_mo.selectbox(
+              "📂 2. Month Folder:", list(month_options.keys())
+          )
+          month_id = month_options[sel_month]
+
+          col_scan.write("")
+          col_scan.write("")
+          if col_scan.button(
+              "🔄 Scan Folder", type="primary", use_container_width=True
+          ):
+            st.session_state["scanned_month_id"] = month_id
+        else:
+          st.warning("No month subfolders found inside the selected year.")
+      else:
+        st.warning("No Year folders found matching 'Edition' or '202*'.")
+
+      st.divider()
+
+      if "scanned_month_id" in st.session_state:
+        doc_query = (
+            f"'{st.session_state['scanned_month_id']}' in parents and"
+            " mimeType='application/vnd.google-apps.document' and trashed=false"
+        )
+        doc_res = (
+            drive_service.files()
+            .list(q=doc_query, fields="files(id, name)")
+            .execute()
+        )
+        docs = doc_res.get("files", [])
+
+        if docs:
+          st.markdown(f"### 📋 Files in Folder (`{len(docs)}` found)")
+
+          for doc in docs:
+            doc_id = doc.get("id")
+            doc_name = doc.get("name")
+            prior_task = assigned_map.get(doc_id)
+
+            with st.container(border=True):
+              if prior_task:
+                # State: Already Assigned
+                cur_st = prior_task.get("status")
+                badge_icon = (
+                    "🟡"
+                    if cur_st == "Pending Translation"
+                    else ("🔵" if cur_st == "Pending Review" else "🟢")
+                )
+                t_lbl = (
+                    format_vol_label(prior_task.get("translator"))
+                    if prior_task.get("translator")
+                    else "🤖 AI Bypass"
+                )
+                r_lbl = format_vol_label(prior_task.get("reviewer"))
+
+                c_info, c_badge, c_re = st.columns([3, 1.2, 1])
+                with c_info:
+                  st.markdown(f"📄 **{doc_name}**")
+                  st.caption(f"Assigned: **{t_lbl}** ➔ **{r_lbl}**")
+                with c_badge:
+                  st.markdown(f"Status: `{badge_icon} {cur_st}`")
+                with c_re:
+                  with st.popover("🔄 Reassign", use_container_width=True):
+                    re_t = st.selectbox(
+                        "New Translator:",
+                        t_options,
+                        format_func=format_vol_label,
+                        key=f"ret_{doc_id}",
+                    )
+                    re_r = st.selectbox(
+                        "New Reviewer:",
+                        r_options,
+                        format_func=format_vol_label,
+                        key=f"rer_{doc_id}",
+                    )
+                    if st.button(
+                        "Confirm",
+                        key=f"btn_re_{doc_id}",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                      if re_r == r_options[0]:
+                        st.error("Select a reviewer.")
+                      else:
+                        f_t = "" if re_t == t_options[0] else re_t
+                        init_s = (
+                            "Pending Review"
+                            if not f_t
+                            else "Pending Translation"
+                        )
+                        assign_task_to_sheet(doc_id, doc_name, f_t, re_r, init_s)
+                        st.success("Reassigned!")
+                        time.sleep(0.5)
+                        st.rerun()
+              else:
+                # State: Unassigned
+                cn, ct, cr, cb = st.columns([3, 2, 2, 1.2])
+                with cn:
+                  st.markdown(f"📄 **{doc_name}**")
+                  st.caption("⚪ *Unassigned*")
+                with ct:
+                  t_sel = st.selectbox(
+                      "Translator:",
+                      t_options,
+                      format_func=format_vol_label,
+                      key=f"t_{doc_id}",
+                      label_visibility="collapsed",
+                  )
+                with cr:
+                  r_sel = st.selectbox(
+                      "Reviewer:",
+                      r_options,
+                      format_func=format_vol_label,
+                      key=f"r_{doc_id}",
+                      label_visibility="collapsed",
+                  )
+                with cb:
+                  if st.button(
+                      "🚀 Assign",
+                      key=f"btn_{doc_id}",
+                      type="primary",
+                      use_container_width=True,
+                  ):
+                    if r_sel == r_options[0]:
+                      st.error("Select a reviewer!")
+                    else:
+                      final_t = "" if t_sel == t_options[0] else t_sel
+                      init_status = (
+                          "Pending Review"
+                          if not final_t
+                          else "Pending Translation"
+                      )
+                      assign_task_to_sheet(
+                          doc_id, doc_name, final_t, r_sel, init_status
+                      )
+                      st.success("Assigned!")
+                      time.sleep(0.5)
+                      st.rerun()
+        else:
+          st.info("No Google Docs found in this month folder.")
+    except Exception as e:
+      st.error(f"Google Drive Error: {e}")
+
+  # =========================================================
+  # TAB 3: VOLUNTEERS DATABASE
+  # =========================================================
+  with tab_vols:
+    st.subheader("Manage Volunteer Access")
+    try:
+      res = (
+          sheets_service.spreadsheets()
+          .values()
+          .get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=VOLUNTEERS_RANGE)
+          .execute()
+      )
+      vol_data = res.get("values", [])
+      if not vol_data:
+        vol_data = [["Email", "Name", "Role", "Status"]]
+      df_vol = pd.DataFrame(vol_data[1:], columns=vol_data[0])
+      edited_vol = st.data_editor(
+          df_vol,
+          num_rows="dynamic",
+          use_container_width=True,
+          column_config={
+              "Role": st.column_config.SelectboxColumn(
+                  "Role",
+                  options=["translator", "reviewer", "admin"],
+                  required=True,
+              ),
+              "Status": st.column_config.SelectboxColumn(
+                  "Status", options=["Active", "Suspended"], required=True
+              ),
+          },
+      )
+      if st.button("💾 Save Volunteers", type="primary"):
+        overwrite_sheet_data(
+            VOLUNTEERS_RANGE,
+            [edited_vol.columns.tolist()] + edited_vol.fillna("").values.tolist(),
+        )
+        st.success("Volunteers database updated!")
+    except Exception as e:
+      st.error(f"Error fetching volunteers: {e}")
+
+  # =========================================================
+  # TAB 4: GLOSSARY COMMAND CENTER
+  # =========================================================
+  with tab_glos:
+    st.subheader("Live Terminology Editor")
+    try:
+      res = (
+          sheets_service.spreadsheets()
+          .values()
+          .get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_RANGE)
+          .execute()
+      )
+      glos_data = res.get("values", [])
+      headers = ["ID", "Category", "English", "Arabic"]
+      rows_to_display = (
+          glos_data[1:]
+          if (glos_data and len(glos_data[0]) == 4 and not glos_data[0][0].isdigit())
+          else glos_data
+      )
+      cleaned_rows = [
+          list(row) + [""] * (4 - len(row)) for row in rows_to_display
+      ]
+      if not cleaned_rows:
+        cleaned_rows = [["1", "General", "", ""]]
+      df_glos = pd.DataFrame(cleaned_rows, columns=headers)
+      edited_glos = st.data_editor(
+          df_glos, num_rows="dynamic", use_container_width=True
+      )
+      if st.button("💾 Sync Glossary to AI", type="primary"):
+        overwrite_sheet_data(
+            GLOSSARY_RANGE,
+            [edited_glos.columns.tolist()]
+            + edited_glos.fillna("").values.tolist(),
+        )
+        st.success("Glossary synced successfully!")
+        st.cache_data.clear()
+    except Exception as e:
+      st.error(f"Error fetching glossary: {e}")
+
+  # =========================================================
+  # TAB 5: LIVE RADAR (CONCURRENCY LOCKS)
+  # =========================================================
+  with tab_radar:
     st.subheader("Active Document Locks")
     try:
       res = (
@@ -363,80 +785,10 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get(
     except Exception as e:
       st.error(f"Error fetching radar: {e}")
 
-  with tab2:
-    st.subheader("Manage Volunteer Access")
-    try:
-      res = (
-          sheets_service.spreadsheets()
-          .values()
-          .get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=VOLUNTEERS_RANGE)
-          .execute()
-      )
-      vol_data = res.get("values", [])
-      if not vol_data:
-        vol_data = [["Email", "Name", "Role", "Status"]]
-      df_vol = pd.DataFrame(vol_data[1:], columns=vol_data[0])
-      edited_vol = st.data_editor(
-          df_vol,
-          num_rows="dynamic",
-          use_container_width=True,
-          column_config={
-              "Role": st.column_config.SelectboxColumn(
-                  "Role",
-                  options=["translator", "reviewer", "admin"],
-                  required=True,
-              ),
-              "Status": st.column_config.SelectboxColumn(
-                  "Status", options=["Active", "Suspended"], required=True
-              ),
-          },
-      )
-      if st.button("💾 Save Volunteers", type="primary"):
-        overwrite_sheet_data(
-            VOLUNTEERS_RANGE,
-            [edited_vol.columns.tolist()] + edited_vol.fillna("").values.tolist(),
-        )
-        st.success("Volunteers database updated!")
-    except Exception as e:
-      st.error(f"Error fetching volunteers: {e}")
-
-  with tab3:
-    st.subheader("Live Terminology Editor")
-    try:
-      res = (
-          sheets_service.spreadsheets()
-          .values()
-          .get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_RANGE)
-          .execute()
-      )
-      glos_data = res.get("values", [])
-      headers = ["ID", "Category", "English", "Arabic"]
-      rows_to_display = (
-          glos_data[1:]
-          if (glos_data and len(glos_data[0]) == 4 and not glos_data[0][0].isdigit())
-          else glos_data
-      )
-      cleaned_rows = [
-          list(row) + [""] * (4 - len(row)) for row in rows_to_display
-      ]
-      if not cleaned_rows:
-        cleaned_rows = [["1", "General", "", ""]]
-      df_glos = pd.DataFrame(cleaned_rows, columns=headers)
-      edited_glos = st.data_editor(
-          df_glos, num_rows="dynamic", use_container_width=True
-      )
-      if st.button("💾 Sync Glossary to AI", type="primary"):
-        overwrite_sheet_data(
-            GLOSSARY_RANGE,
-            [edited_glos.columns.tolist()]
-            + edited_glos.fillna("").values.tolist(),
-        )
-        st.success("Glossary synced successfully!")
-        st.cache_data.clear()
-    except Exception as e:
-      st.error(f"Error fetching glossary: {e}")
-
-  with tab4:
+  # =========================================================
+  # TAB 6: BROADCAST SYSTEM
+  # =========================================================
+  with tab_bcast:
     st.subheader("Team Broadcast System")
     st.caption("Send a mass email to all 'Active' volunteers.")
     broadcast_subject = st.text_input("Subject")
@@ -444,7 +796,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get(
 
     if st.button("🚀 Send Broadcast", type="primary"):
       if broadcast_subject and broadcast_message:
-        vols = fetch_volunteers()
         active_emails = [
             email
             for email, d in vols.items()
@@ -482,129 +833,8 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get(
       else:
         st.warning("Please enter a subject and a message.")
 
-  with tab5:
-    st.subheader("Workflow Assignment Desk")
-    st.info(
-        "💡 **Note:** Translator assignment is optional. If left unassigned"
-        " (Bypass), the AI will generate the initial draft and route it"
-        " directly to the Reviewer's inbox with full correction highlights."
-    )
-
-    try:
-      folder_res = (
-          drive_service.files()
-          .list(
-              q="mimeType='application/vnd.google-apps.folder' and trashed=false",
-              fields="files(id, name)",
-          )
-          .execute()
-      )
-      all_folders = folder_res.get("files", [])
-      year_folders = [
-          f
-          for f in all_folders
-          if "Edition" in f["name"] or "202" in f["name"]
-      ]
-
-      if year_folders:
-        year_options = {f["name"]: f["id"] for f in year_folders}
-        sel_year = st.selectbox(
-            "📁 1. Select Year Folder:", list(year_options.keys())
-        )
-        year_id = year_options[sel_year]
-
-        month_res = (
-            drive_service.files()
-            .list(
-                q=(
-                    f"'{year_id}' in parents and"
-                    " mimeType='application/vnd.google-apps.folder' and"
-                    " trashed=false"
-                ),
-                fields="files(id, name)",
-            )
-            .execute()
-        )
-        month_folders = month_res.get("files", [])
-
-        if month_folders:
-          month_options = {f["name"]: f["id"] for f in month_folders}
-          sel_month = st.selectbox(
-              "📂 2. Select Month Folder:", list(month_options.keys())
-          )
-          month_id = month_options[sel_month]
-
-          if st.button("🔄 Fetch Documents", type="primary"):
-            st.session_state["scanned_month_id"] = month_id
-        else:
-          st.warning("No subfolders found in this year.")
-      else:
-        st.warning("No Year folders found in Drive.")
-
-      st.divider()
-
-      if "scanned_month_id" in st.session_state:
-        doc_query = (
-            f"'{st.session_state['scanned_month_id']}' in parents and"
-            " mimeType='application/vnd.google-apps.document' and trashed=false"
-        )
-        doc_res = (
-            drive_service.files()
-            .list(q=doc_query, fields="files(id, name)")
-            .execute()
-        )
-        docs = doc_res.get("files", [])
-
-        if docs:
-          st.markdown(f"### Available Documents ({len(docs)})")
-          vols = fetch_volunteers()
-          t_list = ["[Optional] Bypass - AI Only"] + [
-              e
-              for e, d in vols.items()
-              if d.get("role") in ["translator", "admin"]
-              and d.get("status", "").lower() == "active"
-          ]
-          r_list = ["[Mandatory] Select Reviewer..."] + [
-              e
-              for e, d in vols.items()
-              if d.get("role") in ["reviewer", "admin"]
-              and d.get("status", "").lower() == "active"
-          ]
-
-          for doc in docs:
-            with st.container(border=True):
-              c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-              c1.markdown(f"📄 **{doc.get('name')}**")
-              t_sel = c2.selectbox("Translator", t_list, key=f"t_{doc.get('id')}")
-              r_sel = c3.selectbox("Reviewer", r_list, key=f"r_{doc.get('id')}")
-
-              if c4.button(
-                  "🚀 Assign Task",
-                  key=f"btn_{doc.get('id')}",
-                  use_container_width=True,
-              ):
-                if r_sel == r_list[0]:
-                  st.error("❌ You must select a Reviewer!")
-                else:
-                  t_email = "" if t_sel == t_list[0] else t_sel
-                  status = (
-                      "Pending Review" if t_email == "" else "Pending Translation"
-                  )
-                  assign_task_to_sheet(
-                      doc.get("id"), doc.get("name"), t_email, r_sel, status
-                  )
-                  msg = (
-                      "Task assigned! Skipped human translation."
-                      if not t_email
-                      else f"Task assigned: {t_email} -> {r_sel}."
-                  )
-                  st.success(f"✅ {msg}")
-        else:
-          st.info("No Google Docs found in this folder.")
-    except Exception as e:
-      st.error(f"Google Drive Error: {e}")
-
   st.stop()
+
 
 # ==========================================
 # 4. USER INBOX & TASK DELEGATION
@@ -831,7 +1061,6 @@ def release_document_lock(row_index):
 
 @st.cache_data(ttl=3600)
 def fetch_glossary():
-  """Fetches glossary and counts entries explicitly for verification."""
   try:
     res = (
         sheets_service.spreadsheets()
@@ -846,13 +1075,12 @@ def fetch_glossary():
     count = 0
     for row in vals:
       if len(row) >= 2 and row[0].strip() and row[1].strip():
-        # Skip header if present
         if row[0].strip().lower() == "english":
           continue
         glos_lines.append(f"- {row[0].strip()} -> {row[1].strip()}")
         count += 1
     return "\n".join(glos_lines), count
-  except Exception as e:
+  except Exception:
     return "", 0
 
 
@@ -920,7 +1148,6 @@ def _call_gemini(model_name, prompt, schema_type):
   return json.loads(clean_text)
 
 
-# --- MANDATORY GLOSSARY PROMPTS ---
 def translate_with_ai(english: str, glossary_text: str):
   prompt = f"""You are an expert bilingual translator specializing in 12-step recovery literature. 
 Translate the English text into Arabic accurately, clinical, professional, and non-moralizing.
@@ -1036,7 +1263,9 @@ Segments to Translate:
 def review_batch_with_fallback(batch_segments, glossary_text):
   if not GENAI_AVAILABLE or client is None:
     return [
-        review_with_ai(s.get("english", ""), s.get("arabic", ""), glossary_text)
+        review_with_ai(
+            s.get("english", ""), s.get("arabic", ""), glossary_text
+        )
         for s in batch_segments
     ]
   input_payload = "\n\n".join([
@@ -1268,7 +1497,6 @@ with col_h2:
     else:
       st.warning("⚠️ Glossary: Not Loaded")
 
-# Is this an automated Bypass Task?
 is_bypass_task = task.get("translator") == ""
 
 if not st.session_state.get("processed_data"):
@@ -1326,15 +1554,13 @@ if not st.session_state.get("processed_data"):
             })
           progress_bar.progress((idx + 1) / len(batches))
 
-      # --- CASE B: REVIEWER MODE (ALWAYS GETS FULL REVIEWER ENGINE) ---
+      # --- CASE B: REVIEWER MODE ---
       else:
-        # Check if document has Arabic text or if it's an un-translated bypass doc
         has_arabic = any(
             re.search(r"[\u0600-\u06FF]", p.get("text", "")) for p in paras
         )
 
         if not has_arabic or is_bypass_task:
-          # AI BYPASS FLOW: Generate AI draft first, then review it to show full highlights
           st.info(
               "🤖 **AI Bypass Mode:** Generating initial draft and analyzing"
               " narrative flow for your review..."
@@ -1344,7 +1570,7 @@ if not st.session_state.get("processed_data"):
               for i in range(0, len(paras), BATCH_SIZE)
           ]
 
-          # Step 1: Translate
+          # Step 1: Translate draft
           draft_segments = []
           for idx, batch in enumerate(batches):
             batch_payload = [
@@ -1369,7 +1595,7 @@ if not st.session_state.get("processed_data"):
                   "glossary_notes": ai_t.get("glossary_notes", ""),
               })
 
-          # Step 2: Review the draft to create the Diff Highlights
+          # Step 2: Review draft to generate diff highlights
           rev_batches = [
               draft_segments[i : i + BATCH_SIZE]
               for i in range(0, len(draft_segments), BATCH_SIZE)
@@ -1393,7 +1619,7 @@ if not st.session_state.get("processed_data"):
                           else ""
                       )
                   ),
-                  "ar_start": None,  # Will be pushed as full doc
+                  "ar_start": None,
                   "ar_end": None,
                   "user_arabic": suggested,
                   "is_approved": (status_val == "perfect"),
@@ -1401,7 +1627,6 @@ if not st.session_state.get("processed_data"):
             progress_bar.progress((idx + 1) / len(rev_batches))
 
         else:
-          # STANDARD REVIEW FLOW: Compare human translator's Arabic against AI
           st.info(
               "Extracting segments and comparing human translation against AI"
               " audit..."
@@ -1448,7 +1673,7 @@ if not st.session_state.get("processed_data"):
                   "reasoning": "⚠️ Orphaned Arabic block.",
                   "ar_start": item.get("ar_start"),
                   "ar_end": item.get("ar_end"),
-                  "user_arabic": item.get("arabic", ""),
+                  "user_arabic": item.get("arabic"),
                   "is_approved": False,
               })
             elif item.get("arabic") == "[MISSING ARABIC TRANSLATION]":
@@ -1494,7 +1719,6 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
   )
 
   with st.container(border=True):
-    # UI FOR TRANSLATOR
     if st.session_state.get("app_mode") == "Translator Mode":
       st.markdown(f"### Segment {seg_id}")
       col_en, col_ar = st.columns(2)
@@ -1515,8 +1739,6 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
         if final_text != item.get("user_arabic"):
           item["user_arabic"] = final_text
           state_modified = True
-
-    # UI FOR REVIEWER (ALWAYS RENDERS DIFF HIGHLIGHTS)
     else:
       color = (
           "🟢"
@@ -1530,7 +1752,6 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
       with col_en:
         st.info(eng_txt)
       with col_ar:
-        # THE CORRECTION HIGHLIGHTS WINDOW (RESTORED)
         st.markdown(
             generate_html_diff(orig_ar, sugg_ar), unsafe_allow_html=True
         )
@@ -1615,13 +1836,15 @@ if approved_count == total_segments and total_segments > 0:
             st.session_state.get("app_mode") == "Translator Mode"
             or is_bypass_task
         ):
-          # In bypass or translator mode, push as a complete document block
           if is_bypass_task:
-            ar_compiled = "\n\n".join(
-                [item.get("final_arabic", "") for item in finalized_data]
-            )
+            ar_compiled = "\n\n".join([
+                item.get("final_arabic", "")
+                if isinstance(item, dict)
+                else str(item)
+                for item in finalized_data
+            ])
           else:
-            ar_compiled = "\n\n".join(finalized_data)
+            ar_compiled = "\n\n".join([str(item) for item in finalized_data])
 
           success = push_to_drive_translator(file_id, ar_compiled)
           if success:
@@ -1633,7 +1856,6 @@ if approved_count == total_segments and total_segments > 0:
             )
             update_assignment_status(file_id, new_status)
         else:
-          # Normal review: surgically patch human translation
           success = push_to_drive_reviewer(file_id, finalized_data)
           if success:
             update_assignment_status(file_id, "Completed")
