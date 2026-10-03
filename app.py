@@ -270,7 +270,6 @@ if st.session_state.get("app_mode") == "God Mode":
             
             df_vol = pd.DataFrame(vol_data[1:], columns=vol_data[0])
             
-            # Configure Role and Status columns to render as dropdown selectboxes
             edited_vol = st.data_editor(
                 df_vol, 
                 num_rows="dynamic", 
@@ -307,23 +306,18 @@ if st.session_state.get("app_mode") == "God Mode":
             res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_RANGE).execute()
             glos_data = res.get('values', [])
             
-            # Explicit default headers
             headers = ["ID", "Category", "English", "Arabic"]
             
-            # If data exists, check if the first row looks like headers or data
             rows_to_display = []
             if glos_data and len(glos_data) > 0:
-                # If first row matches our header count, use it as headers
                 if len(glos_data[0]) == 4 and not glos_data[0][0].isdigit():
                     headers = [str(h).strip() for h in glos_data[0]]
                     rows_to_display = glos_data[1:]
                 else:
                     rows_to_display = glos_data
             
-            # Ensure rows have exactly 4 columns
             cleaned_rows = []
             for row in rows_to_display:
-                # Pad or truncate row to match 4 columns
                 padded = list(row) + [""] * (4 - len(row))
                 cleaned_rows.append(padded[:4])
                 
@@ -335,7 +329,6 @@ if st.session_state.get("app_mode") == "God Mode":
             
             if st.button("💾 Sync Glossary to AI", type="primary"):
                 clean_df = edited_glos.fillna("")
-                # Include headers as the first row of the matrix when writing back
                 updated_matrix = [clean_df.columns.tolist()] + clean_df.values.tolist()
                 overwrite_sheet_data(GLOSSARY_RANGE, updated_matrix)
                 st.success("Glossary synced successfully!")
@@ -648,7 +641,7 @@ Segments to Translate:
             try:
                 parsed = _call_gemini(model_name, prompt, TranslationBatchResult)
                 items = parsed.get("items", [])
-                if len(items) == len(batch_segments) and all(items[i]['id'] == batch_segments[i]['id'] for i in range(len(items))):
+                if len(items) == len(batch_segments) and all(items[i].get('id') == batch_segments[i].get('id') for i in range(len(items))):
                     return items
             except Exception as e:
                 if _is_retryable(str(e)) and attempt < 1:
@@ -684,7 +677,7 @@ Pairs to Review:
             try:
                 parsed = _call_gemini(model_name, prompt, ReviewBatchResult)
                 items = parsed.get("items", [])
-                if len(items) == len(batch_segments) and all(items[i]['id'] == batch_segments[i]['id'] for i in range(len(items))):
+                if len(items) == len(batch_segments) and all(items[i].get('id') == batch_segments[i].get('id') for i in range(len(items))):
                     return items
             except Exception as e:
                 if _is_retryable(str(e)) and attempt < 1:
@@ -784,7 +777,7 @@ def smart_align_with_anomaly_detection(paragraphs: list):
         if en_obj['text'] == "[MISSING ENGLISH SOURCE]": status = 'misaligned_ar'
         elif ar_obj['text'] == "[MISSING ARABIC TRANSLATION]": status = 'misaligned_en'
 
-        aligned_segments.append({'id': i + 1, 'status': status, 'english': en_obj['text'], 'arabic': ar_obj['text'], 'ar_start': ar_obj['start'], 'ar_end': ar_obj['end'], 'anomaly': anomaly_msg})
+        aligned_segments.append({'id': i + 1, 'status': status, 'english': en_obj['text'], 'arabic': ar_obj['text'], 'ar_start': ar_obj.get('start'), 'ar_end': ar_obj.get('end'), 'anomaly': anomaly_msg})
     return aligned_segments
 
 def push_to_drive_translator(document_id, final_arabic_text):
@@ -803,7 +796,7 @@ def push_to_drive_translator(document_id, final_arabic_text):
 def push_to_drive_reviewer(document_id, approved_segments):
     docs_svc, _, _ = get_google_services()
     try:
-        valid_segments = [seg for seg in approved_segments if seg['ar_start'] is not None and seg['ar_end'] is not None]
+        valid_segments = [seg for seg in approved_segments if seg.get('ar_start') is not None and seg.get('ar_end') is not None]
         valid_segments.sort(key=lambda x: x['ar_start'], reverse=True)
         requests = []
         for seg in valid_segments:
@@ -811,7 +804,7 @@ def push_to_drive_reviewer(document_id, approved_segments):
             requests.append({'insertText': {'location': {'index': seg['ar_start']}, 'text': seg['final_arabic']}})
             
         if requests:
-            docs_svc.documents().batchUpdate(documentId=document_id, body={'requests': requests}).execute()
+            docs_service.documents().batchUpdate(documentId=document_id, body={'requests': requests}).execute()
         return True
     except Exception as e:
         st.error(f"Failed to push to Drive. Error: {e}")
@@ -828,7 +821,7 @@ if not GENAI_AVAILABLE:
 glossary_data = fetch_glossary()
 
 col_title, col_logout = st.columns([5, 1])
-with col_title: st.title("⚙️️ 12-Step AI Suite")
+with col_title: st.title("⚙️ 12-Step AI Suite")
 with col_logout:
     if st.button("🚪 Logout", use_container_width=True):
         st.session_state.clear()
@@ -888,8 +881,8 @@ if st.button("Load & Process Document", type="primary") and doc_url:
                         ai_results = translate_batch_with_fallback(batch_payload, glossary_data)
                         for ai_res in ai_results:
                             processed_results.append({
-                                "id": ai_res['id'] + (idx * BATCH_SIZE),
-                                "english": batch[ai_res['id'] - 1]['text'],
+                                "id": ai_res.get('id', 0) + (idx * BATCH_SIZE),
+                                "english": batch[ai_res.get('id', 1) - 1]['text'],
                                 "arabic_translation": ai_res.get("arabic_translation", ""),
                                 "glossary_notes": ai_res.get("glossary_notes", ""),
                                 "user_arabic": ai_res.get("arabic_translation", ""),
@@ -909,36 +902,36 @@ if st.button("Load & Process Document", type="primary") and doc_url:
                     for idx, batch in enumerate(batches):
                         ai_results = review_batch_with_fallback(batch, glossary_data)
                         for ai_res, original_seg in zip(ai_results, batch):
-                            suggested = ai_res.get("suggested_arabic", original_seg['arabic'])
+                            suggested = ai_res.get("suggested_arabic", original_seg.get('arabic', ''))
                             status_val = ai_res.get('status', 'minor_edits')
                             processed_results.append({
-                                "id": original_seg['id'], "status": status_val,
-                                "english": original_seg['english'], "original_arabic": original_seg['arabic'],
+                                "id": original_seg.get('id'), "status": status_val,
+                                "english": original_seg.get('english', ''), "original_arabic": original_seg.get('arabic', ''),
                                 "suggested_arabic": suggested, "reasoning": ai_res.get("reasoning", ""),
-                                "anomaly": original_seg['anomaly'], "ar_start": original_seg['ar_start'], "ar_end": original_seg['ar_end'],
+                                "anomaly": original_seg.get('anomaly'), "ar_start": original_seg.get('ar_start'), "ar_end": original_seg.get('ar_end'),
                                 "user_arabic": suggested, "is_approved": (status_val == 'perfect')
                             })
                         progress_bar.progress((idx + 1) / len(batches))
                         
                     for item in segments:
-                        if item['status'] == 'misaligned_en':
-                            trans_res = translate_with_ai(item['english'], glossary_data)
+                        if item.get('status') == 'misaligned_en':
+                            trans_res = translate_with_ai(item.get('english', ''), glossary_data)
                             t_arabic = trans_res.get("arabic_translation", "")
                             processed_results.append({
-                                "id": item['id'], "status": "major_rewrite", "english": item['english'],
+                                "id": item.get('id'), "status": "major_rewrite", "english": item.get('english', ''),
                                 "original_arabic": "[MISSING]", "suggested_arabic": t_arabic,
-                                "reasoning": "⚠️ Auto-translated orphaned English.", "anomaly": item['anomaly'],
+                                "reasoning": "⚠️ Auto-translated orphaned English.", "anomaly": item.get('anomaly'),
                                 "ar_start": None, "ar_end": None, "user_arabic": t_arabic, "is_approved": False
                             })
-                        elif item['status'] == 'misaligned_ar':
+                        elif item.get('status') == 'misaligned_ar':
                             processed_results.append({
-                                "id": item['id'], "status": "major_rewrite", "english": "[MISSING]",
-                                "original_arabic": item['arabic'], "suggested_arabic": item['arabic'],
-                                "reasoning": "⚠️ Orphaned Arabic. Ignored.", "anomaly": item['anomaly'],
-                                "ar_start": item['ar_start'], "ar_end": item['ar_end'], "user_arabic": item['arabic'], "is_approved": False
+                                "id": item.get('id'), "status": "major_rewrite", "english": "[MISSING]",
+                                "original_arabic": item.get('arabic', ''), "suggested_arabic": item.get('arabic', ''),
+                                "reasoning": "⚠️ Orphaned Arabic. Ignored.", "anomaly": item.get('anomaly'),
+                                "ar_start": item.get('ar_start'), "ar_end": item.get('ar_end'), "user_arabic": item.get('arabic', ''), "is_approved": False
                             })
                             
-                    processed_results.sort(key=lambda x: x['id'])
+                    processed_results.sort(key=lambda x: x.get('id', 0))
                 
                 # Silent initial lock registration
                 save_draft_to_sheet(
@@ -964,17 +957,18 @@ if st.session_state['processed_data']:
         st.subheader("Translation Editor")
         for i, item in enumerate(st.session_state['processed_data']):
             with st.container(border=True):
-                st.markdown(f"### Segment {item['id']}")
+                seg_id = item.get('id', i + 1)
+                st.markdown(f"### Segment {seg_id}")
                 col_en, col_ar = st.columns(2)
                 
                 with col_en:
-                    st.info(item['english'])
+                    st.info(item.get('english', ''))
                     if item.get('glossary_notes'):
                         st.markdown("💡 **Glossary Notes:**")
-                        st.caption(item['glossary_notes'])
+                        st.caption(item.get('glossary_notes'))
                         
                 with col_ar:
-                    default_text = item.get('user_arabic', item['arabic_translation'])
+                    default_text = item.get('user_arabic', item.get('arabic_translation', ''))
                     final_text = st.text_area(
                         "Final Translation", 
                         value=default_text, 
@@ -987,7 +981,7 @@ if st.session_state['processed_data']:
                         state_modified = True
 
                 default_approval = item.get('is_approved', False)
-                is_approved = st.checkbox(f"✅ Approve Segment {item['id']}", key=f"approve_{i}", value=default_approval)
+                is_approved = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"approve_{i}", value=default_approval)
                 if is_approved != item.get('is_approved'):
                     item['is_approved'] = is_approved
                     state_modified = True
@@ -999,19 +993,27 @@ if st.session_state['processed_data']:
     else:
         st.subheader("Review Segments & Diff Visualizer")
         for i, item in enumerate(st.session_state['processed_data']):
-            color = "🟢" if item['status'] == "perfect" else ("🟡" if item['status'] == "minor_edits" else "🔴")
+            # SECURE/DEFENSIVE READS TO PREVENT KEY ERRORS
+            status_val = item.get('status', 'minor_edits')
+            seg_id = item.get('id', i + 1)
+            orig_ar = item.get('original_arabic', '')
+            sugg_ar = item.get('suggested_arabic', item.get('arabic_translation', ''))
+            reasoning_txt = item.get('reasoning', item.get('glossary_notes', 'No AI reasoning available.'))
+            
+            color = "🟢" if status_val == "perfect" else ("🟡" if status_val == "minor_edits" else "🔴")
+            
             with st.container(border=True):
-                st.markdown(f"### Segment {item['id']} | Status: {color} {item['status'].upper()}")
+                st.markdown(f"### Segment {seg_id} | Status: {color} {status_val.upper()}")
                 col_en, col_ar = st.columns(2)
                 with col_en: 
-                    st.info(item['english'])
+                    st.info(item.get('english', ''))
                 with col_ar:
-                    diff_html = generate_html_diff(item['original_arabic'], item['suggested_arabic'])
+                    diff_html = generate_html_diff(orig_ar, sugg_ar)
                     st.markdown(diff_html, unsafe_allow_html=True)
                     with st.expander("💡 View AI Reasoning"): 
-                        st.markdown(item['reasoning'])
+                        st.markdown(reasoning_txt)
                     
-                    default_text = item.get('user_arabic', item['suggested_arabic'])
+                    default_text = item.get('user_arabic', sugg_ar)
                     final_text = st.text_area(
                         "Final Output", 
                         value=default_text, 
@@ -1023,8 +1025,8 @@ if st.session_state['processed_data']:
                         item['user_arabic'] = final_text
                         state_modified = True
                 
-                default_approval = item.get('is_approved', (item['status'] == 'perfect'))
-                is_approved = st.checkbox(f"✅ Approve Segment {item['id']}", key=f"approve_{i}", value=default_approval)
+                default_approval = item.get('is_approved', (status_val == 'perfect'))
+                is_approved = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"approve_{i}", value=default_approval)
                 if is_approved != item.get('is_approved'):
                     item['is_approved'] = is_approved
                     state_modified = True
@@ -1045,11 +1047,11 @@ if st.session_state['processed_data']:
     if approved_count == total_segments and total_segments > 0:
         st.success("🎉 All segments approved! Final review before pushing.")
 
-        full_english = "\n\n".join([item['english'] for item in st.session_state['processed_data']])
+        full_english = "\n\n".join([item.get('english', '') for item in st.session_state['processed_data']])
         if st.session_state["app_mode"] == "Translator Mode":
             full_arabic = "\n\n".join(finalized_data)
         else:
-            full_arabic = "\n\n".join([item['final_arabic'] for item in finalized_data])
+            full_arabic = "\n\n".join([item.get('final_arabic', '') for item in finalized_data])
 
         st.markdown("### 🔍 Final Full-Text Review")
         col_preview_en, col_preview_ar = st.columns(2)
