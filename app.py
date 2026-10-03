@@ -792,12 +792,14 @@ if approved_count == total_segments and total_segments > 0:
         if st.button("🚀 Push to Drive & Close Task", type="primary", use_container_width=True):
             with st.spinner("Processing Drive updates and concluding workflow..."):
                 if st.session_state["app_mode"] == "Translator Mode":
-                    success = push_to_drive_translator(file_id, "\n\n".join(finalized_data))
+                    # تم تصحيح اسم الدالة هنا
+                    success = push_translator(file_id, "\n\n".join(finalized_data))
                     if success:
                         new_status = "Completed" if task['translator'] == task['reviewer'] else "Pending Review"
                         update_assignment_status(file_id, new_status)
                 else:
-                    success = push_to_drive_reviewer(file_id, finalized_data)
+                    # تم تصحيح اسم الدالة هنا
+                    success = push_reviewer(file_id, finalized_data)
                     if success: update_assignment_status(file_id, "Completed")
                 
                 if success:
