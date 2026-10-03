@@ -48,6 +48,15 @@ def apply_custom_css():
         }
         
         .block-container { padding-top: 2rem !important; padding-bottom: 2rem !important; }
+        
+        .task-card {
+            background-color: #F8FAFC;
+            border: 1px solid #E2E8F0;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            border-left: 5px solid #3B82F6;
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -115,18 +124,30 @@ def fetch_assignments():
     try:
         res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=ASSIGNMENTS_RANGE).execute()
         rows = res.get('values', [])
-        if not rows:
-            return [["Doc ID", "Doc Name", "Translator Email", "Reviewer Email", "Status"]]
-        return rows
-    except Exception:
-        return [["Doc ID", "Doc Name", "Translator Email", "Reviewer Email", "Status"]]
+        assignments = []
+        if len(rows) > 1:
+            for idx, r in enumerate(rows[1:]):
+                r.extend([""] * (5 - len(r))) # Pad empty cells
+                assignments.append({
+                    "row_index": idx + 2,
+                    "doc_id": r[0],
+                    "doc_name": r[1],
+                    "translator": r[2].lower().strip(),
+                    "reviewer": r[3].lower().strip(),
+                    "status": r[4]
+                })
+        return assignments
+    except Exception as e:
+        st.error(f"Error fetching assignments: {e}")
+        return []
+
 
 def assign_task_to_sheet(doc_id, doc_name, t_email, r_email, status):
     assignments = fetch_assignments()
     row_idx = None
-    for i, row in enumerate(assignments):
-        if i > 0 and len(row) > 0 and row[0] == doc_id:
-            row_idx = i + 1
+    for row in assignments:
+        if row['doc_id'] == doc_id:
+            row_idx = row['row_index']
             break
 
     body = {'values': [[doc_id, doc_name, t_email, r_email, status]]}
@@ -139,10 +160,9 @@ def assign_task_to_sheet(doc_id, doc_name, t_email, r_email, status):
 
 def update_assignment_status(doc_id, new_status):
     assignments = fetch_assignments()
-    for idx, row in enumerate(assignments):
-        if idx == 0: continue
-        if len(row) > 0 and row[0] == doc_id:
-            range_name = f"'Assignments'!E{idx+1}"
+    for task in assignments:
+        if task['doc_id'] == doc_id:
+            range_name = f"'Assignments'!E{task['row_index']}"
             body = {'values': [[new_status]]}
             sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=range_name, valueInputOption="USER_ENTERED", body=body).execute()
             break
@@ -150,21 +170,26 @@ def update_assignment_status(doc_id, new_status):
 # --- LOGIN SCREEN ---
 def login_screen():
     if st.session_state.get("authenticated"): return True
-    st.title("🤝 منصة الذكاء الاصطناعي للخطوات الـ 12")
-    with st.form("login_form"):
-        email = st.text_input("أدخل بريدك الإلكتروني المسجل:").strip().lower()
-        if st.form_submit_button("تسجيل الدخول", type="primary"):
-            volunteers = fetch_volunteers()
-            if email in volunteers:
-                user_data = volunteers[email]
-                if user_data["status"].lower() != "active":
-                    st.error("حسابك موقوف حالياً. راجع الإدارة.")
-                else:
-                    st.session_state.update({"authenticated": True, "user_email": email, "user_role": user_data["role"], "user_name": user_data["name"]})
-                    st.session_state["app_mode"] = "God Mode" if user_data["role"] == "admin" else ("Translator Mode" if user_data["role"] == "translator" else "Reviewer Mode")
-                    st.rerun()
-            else:
-                st.error("البريد الإلكتروني غير مسجل في النظام.")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.title("🤝 منصة الذكاء الاصطناعي للخطوات الـ 12")
+        st.caption("Volunteer Translation & Review Portal")
+        with st.container(border=True):
+            with st.form("login_form"):
+                email = st.text_input("أدخل بريدك الإلكتروني المسجل:").strip().lower()
+                if st.form_submit_button("تسجيل الدخول", type="primary", use_container_width=True):
+                    volunteers = fetch_volunteers()
+                    if email in volunteers:
+                        user_data = volunteers[email]
+                        if user_data["status"].lower() != "active":
+                            st.error("حسابك موقوف حالياً. راجع الإدارة.")
+                        else:
+                            st.session_state.update({"authenticated": True, "user_email": email, "user_role": user_data["role"], "user_name": user_data["name"]})
+                            st.session_state["app_mode"] = "God Mode" if user_data["role"] == "admin" else ("Translator Mode" if user_data["role"] == "translator" else "Reviewer Mode")
+                            st.rerun()
+                    else:
+                        st.error("البريد الإلكتروني غير مسجل في النظام.")
     return False
 
 if not login_screen(): st.stop()
@@ -172,6 +197,8 @@ if not login_screen(): st.stop()
 if 'processed_data' not in st.session_state: st.session_state['processed_data'] = None
 if 'source_file_id' not in st.session_state: st.session_state['source_file_id'] = None
 if 'session_row_index' not in st.session_state: st.session_state['session_row_index'] = None
+if 'active_task' not in st.session_state: st.session_state['active_task'] = None
+
 
 # ==========================================
 # 3. GOD MODE (PANDORA BOX DASHBOARD)
@@ -184,9 +211,33 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
         
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["📡 الرادار", "👥 المتطوعين", "📖 القاموس", "📢 البث", "🎯 توزيع المهام"])
     
-    # [TABS 1-4 REMAIN IDENTICAL TO YOUR PREVIOUS VERSION - OMITTED FOR BREVITY BUT FULLY FUNCTIONAL]
-    with tab1: st.info("مراقبة الجلسات الحية (الرادار يعمل في الخلفية).")
+    # --- TAB 1: LIVE RADAR ---
+    with tab1: 
+        st.subheader("Active Document Locks")
+        res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
+        session_rows = res.get('values', [])
+        active_locks = False
+        if len(session_rows) > 1:
+            for idx, row in enumerate(session_rows[1:]): 
+                if len(row) > 1 and row[1]: 
+                    active_locks = True
+                    doc_id, locked_by = row[0], row[1]
+                    ts = float(row[2]) if len(row) > 2 and row[2] else 0
+                    time_locked = round((time.time() - ts) / 60, 1) if ts else 0
+                    
+                    with st.container(border=True):
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.markdown(f"🔒 Locked by **{locked_by}** for `{time_locked} minutes`")
+                            st.caption(f"Doc ID: {doc_id}")
+                        with col2:
+                            if st.button("🧨 Kill Lock", key=f"kill_{idx}", use_container_width=True):
+                                sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{idx+2}:D{idx+2}", valueInputOption="USER_ENTERED", body={'values': [["", "", "", ""]]}).execute()
+                                st.rerun()
+        if not active_locks:
+            st.info("No active sessions right now. All clear!")
     
+    # --- TAB 2: VOLUNTEERS DATABASE ---
     with tab2:
         st.subheader("إدارة المتطوعين")
         res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=VOLUNTEERS_RANGE).execute()
@@ -202,6 +253,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
             overwrite_sheet_data(VOLUNTEERS_RANGE, [edited_vol.columns.tolist()] + edited_vol.fillna("").values.tolist())
             st.success("تم التحديث!")
 
+    # --- TAB 3: GLOSSARY COMMAND CENTER ---
     with tab3:
         st.subheader("محرر القاموس")
         res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_RANGE).execute()
@@ -217,7 +269,14 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
             st.success("تم تحديث القاموس بنجاح!")
             st.cache_data.clear()
 
-    with tab4: st.info("منصة البث البريدي جاهزة للاستخدام.")
+    # --- TAB 4: BROADCAST ---
+    with tab4: 
+        st.subheader("Team Broadcast System")
+        broadcast_subject = st.text_input("Subject")
+        broadcast_message = st.text_area("Message Body", height=150)
+        if st.button("🚀 Send Broadcast", type="primary"):
+            st.success("Feature ready! (SMTP execution skipped in this preview).")
+
 
     # --- TAB 5: ASSIGNMENT DESK (The Magic Folder Scanner) ---
     with tab5:
@@ -246,484 +305,49 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get('
                     sel_month = st.selectbox("📂 2. اختر مجلد الشهر:", list(month_options.keys()))
                     month_id = month_options[sel_month]
                     
-                    # Step 3: Fetch Documents inside Month folder
-                    doc_res = drive_service.files().list(q=f"'{month_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false", fields="files(id, name)").execute()
-                    docs = doc_res.get('files', [])
-                    
-                    if docs:
-                        st.markdown(f"### الملفات المتاحة ({len(docs)})")
-                        vols = fetch_volunteers()
-                        t_list = ["[اختياري] تخطي المترجم - الذكاء الاصطناعي فقط"] + [e for e, d in vols.items() if d['role'] in ['translator', 'admin'] and d['status'].lower() == 'active']
-                        r_list = ["[إجباري] اختر المدقق..."] + [e for e, d in vols.items() if d['role'] in ['reviewer', 'admin'] and d['status'].lower() == 'active']
-                        
-                        for doc in docs:
-                            with st.container(border=True):
-                                c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-                                c1.markdown(f"📄 **{doc['name']}**")
-                                t_sel = c2.selectbox("المترجم", t_list, key=f"t_{doc['id']}")
-                                r_sel = c3.selectbox("المدقق", r_list, key=f"r_{doc['id']}")
-                                
-                                if c4.button("إسناد المهمة 🚀", key=f"btn_{doc['id']}", use_container_width=True):
-                                    if r_sel == r_list[0]:
-                                        st.error("❌ يجب اختيار مدقق لضمان سير العمل!")
-                                    else:
-                                        t_email = "" if t_sel == t_list[0] else t_sel
-                                        status = "Pending Review" if t_email == "" else "Pending Translation"
-                                        assign_task_to_sheet(doc['id'], doc['name'], t_email, r_sel, status)
-                                        st.success(f"✅ تم الإسناد! ({'تجاوز المترجم للذكاء الاصطناعي' if t_email == '' else 'إلى المترجم ' + t_email})")
-                    else:
-                        st.info("لا توجد ملفات Google Docs داخل هذا المجلد.")
+                    if st.button("🔄 Fetch Documents"):
+                        st.session_state['scanned_month_id'] = month_id
                 else:
-                    st.info("لا توجد مجلدات فرعية في مجلد السنة المختار.")
+                    st.warning("No subfolders found in this year.")
             else:
-                st.warning("لم يتم العثور على مجلدات السنوات. تأكد من مشاركة المجلدات مع الـ Service Account.")
+                st.warning("No Year folders containing 'Edition' found in Drive.")
+                
+            st.divider()
+
+            # Step 3: Fetch Documents inside Month folder
+            if 'scanned_month_id' in st.session_state:
+                doc_query = f"'{st.session_state['scanned_month_id']}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false"
+                doc_res = drive_service.files().list(q=doc_query, fields="files(id, name)").execute()
+                docs = doc_res.get('files', [])
+                
+                if docs:
+                    st.markdown(f"### الملفات المتاحة ({len(docs)})")
+                    vols = fetch_volunteers()
+                    t_list = ["[اختياري] تخطي المترجم - الذكاء الاصطناعي فقط"] + [e for e, d in vols.items() if d['role'] in ['translator', 'admin'] and d['status'].lower() == 'active']
+                    r_list = ["[إجباري] اختر المدقق..."] + [e for e, d in vols.items() if d['role'] in ['reviewer', 'admin'] and d['status'].lower() == 'active']
+                    
+                    for doc in docs:
+                        with st.container(border=True):
+                            c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+                            c1.markdown(f"📄 **{doc['name']}**")
+                            t_sel = c2.selectbox("المترجم", t_list, key=f"t_{doc['id']}")
+                            r_sel = c3.selectbox("المدقق", r_list, key=f"r_{doc['id']}")
+                            
+                            if c4.button("إسناد المهمة 🚀", key=f"btn_{doc['id']}", use_container_width=True):
+                                if r_sel == r_list[0]:
+                                    st.error("❌ يجب اختيار مدقق لضمان سير العمل!")
+                                else:
+                                    t_email = "" if t_sel == t_list[0] else t_sel
+                                    status = "Pending Review" if t_email == "" else "Pending Translation"
+                                    assign_task_to_sheet(doc['id'], doc['name'], t_email, r_sel, status)
+                                    msg = f"Task assigned! Skipped human translation." if not t_email else f"Task assigned to {t_email} -> {r_sel}."
+                                    st.success(f"✅ {msg}")
+                else:
+                    st.info("لا توجد ملفات Google Docs داخل هذا المجلد.")
         except Exception as e:
             st.error(f"خطأ في الاتصال بجوجل درايف: {e}")
 
     st.stop() # Hide user interface from God Mode
-
-# ==========================================
-# 4. USER INBOX & TASK DELEGATION
-# ==========================================
-if not st.session_state.get('source_file_id'):
-    col_t, col_l = st.columns([5, 1])
-    col_t.title("⚙️ 12-Step AI Suite")
-    if col_l.button("🚪 خروج", use_container_width=True): st.session_state.clear(); st.rerun()
-    
-    st.subheader(f"👋 أهلاً بك، {st.session_state['user_name']} | الدور: {st.session_state['user_role'].capitalize()}")
-    st.markdown("---")
-    
-    st.markdown("### 📬 صندوق المهام الخاص بك (Task Inbox)")
-    assignments = fetch_assignments()
-    tasks = assignments[1:] if len(assignments) > 1 else []
-    my_tasks = []
-    
-    for row in tasks:
-        row = row + [""] * (5 - len(row))
-        doc_id, doc_name, t_email, r_email, status = row
-        
-        if st.session_state["app_mode"] == "Translator Mode" and t_email == st.session_state['user_email'] and status == "Pending Translation":
-            my_tasks.append(row)
-        elif st.session_state["app_mode"] == "Reviewer Mode" and r_email == st.session_state['user_email'] and status == "Pending Review":
-            my_tasks.append(row)
-
-    if not my_tasks:
-        st.success("🎉 لا توجد مهام معلقة في صندوقك حالياً. عمل رائع!")
-    else:
-        for task in my_tasks:
-            doc_id, doc_name, t_email, r_email, status = task
-            with st.container(border=True):
-                c1, c2 = st.columns([4, 1])
-                c1.markdown(f"📄 **{doc_name}**")
-                c1.caption(f"الحالة: `{status}`")
-                if c2.button("🚀 بدء العمل", key=f"start_{doc_id}", type="primary", use_container_width=True):
-                    st.session_state['source_file_id'] = doc_id
-                    st.rerun()
-    st.stop() # Wait for user to pick a task
-
-
-# ==========================================
-# 5. AI ENGINE & DOCUMENT PARSING
-# ==========================================
-# (These functions are identical to previous version, collapsed for flow)
-client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"]) if GENAI_AVAILABLE else None
-safety_settings = [types.SafetySetting(category=c, threshold=types.HarmBlockThreshold.BLOCK_NONE) for c in [types.HarmCategory.HARM_CATEGORY_HARASSMENT, types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, typesإليك الكود المحدث بالكامل والشامل لجميع التعديلات (نظام إدارة سير العمل، وإصلاح مشكلة المجلدات، وتحسينات جداول البيانات، وتجاوز المترجم).
-
-لقد قمت ببرمجة كل التفاصيل التي اتفقنا عليها ليكون التطبيق احترافياً، آمناً، وذاتياً الإدارة. قم بنسخ هذا الكود بالكامل واستبدله في ملف `app.py` الخاص بك:
-
-```python
-import streamlit as st
-import re
-import json
-import time
-import random
-import difflib
-import smtplib
-import pandas as pd
-from email.message import EmailMessage
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from pydantic import BaseModel, Field
-
-# --- Google GenAI SDK ---
-try:
-    from google import genai
-    from google.genai import types
-    GENAI_AVAILABLE = True
-except ImportError:
-    GENAI_AVAILABLE = False
-
-# ==========================================
-# 1. CONFIGURATION, SECRETS & CUSTOM CSS
-# ==========================================
-st.set_page_config(page_title="12-Step AI Suite", layout="wide", initial_sidebar_state="collapsed")
-
-def apply_custom_css():
-    st.markdown("""
-    <style>
-        @import url('[https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap](https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap)');
-        
-        html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-        
-        textarea {
-            font-family: 'Cairo', 'Inter', sans-serif !important;
-            font-size: 16px !important;
-            line-height: 1.6 !important;
-            border-radius: 8px !important;
-        }
-        
-        button[kind="primary"] {
-            background-color: #10B981 !important;
-            border-color: #10B981 !important;
-            color: white !important;
-            font-size: 16px !important;
-            font-weight: 600 !important;
-            border-radius: 8px !important;
-            padding: 0.5rem 1rem !important;
-            transition: all 0.2s ease-in-out !important;
-        }
-        button[kind="primary"]:hover {
-            background-color: #059669 !important;
-            border-color: #059669 !important;
-            transform: translateY(-2px);
-        }
-
-        .task-card {
-            background-color: #F8FAFC;
-            border: 1px solid #E2E8F0;
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 15px;
-            border-left: 5px solid #3B82F6;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-
-apply_custom_css()
-
-GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
-GLOSSARY_RANGE = "'المصطلحات'!A:D"
-SESSIONS_RANGE = "'Sessions'!A:D"
-VOLUNTEERS_RANGE = "'Volunteers'!A:D"
-ASSIGNMENTS_RANGE = "'Assignments'!A:E"
-LOCK_TIMEOUT_SECONDS = 14400
-
-BATCH_SIZE = 6
-MAX_RETRIES_PER_MODEL = 3
-BASE_BACKOFF_SECONDS = 2.0
-MAX_BACKOFF_SECONDS = 15.0
-RETRYABLE_KEYWORDS = ("503", "500", "429", "timeout", "Quota")
-
-# ==========================================
-# 2. GOOGLE SERVICES & AUTHENTICATION
-# ==========================================
-@st.cache_resource(ttl=300)
-def get_google_services():
-    try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        credentials = service_account.Credentials.from_service_account_info(
-            creds_dict,
-            scopes=[
-                '[https://www.googleapis.com/auth/documents](https://www.googleapis.com/auth/documents)',
-                '[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)',
-                '[https://www.googleapis.com/auth/spreadsheets](https://www.googleapis.com/auth/spreadsheets)'
-            ]
-        )
-        docs_service = build('docs', 'v1', credentials=credentials, cache_discovery=False)
-        drive_service = build('drive', 'v3', credentials=credentials, cache_discovery=False)
-        sheets_service = build('sheets', 'v4', credentials=credentials, cache_discovery=False)
-        return docs_service, drive_service, sheets_service
-    except Exception as e:
-        st.error(f"Google Auth Error: {e}")
-        return None, None, None
-
-docs_service, drive_service, sheets_service = get_google_services()
-
-def fetch_volunteers():
-    try:
-        sheet = sheets_service.spreadsheets()
-        result = sheet.values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=VOLUNTEERS_RANGE).execute()
-        rows = result.get('values', [])
-        volunteers = {}
-        if len(rows) > 1:
-            for r in rows[1:]:
-                if len(r) >= 4:
-                    email, name, role, status = r[0].strip().lower(), r[1], r[2].lower(), r[3]
-                    volunteers[email] = {"name": name, "role": role, "status": status}
-        return volunteers
-    except Exception:
-        return {}
-
-def overwrite_sheet_data(range_name, data_matrix):
-    sheet = sheets_service.spreadsheets()
-    sheet.values().clear(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=range_name).execute()
-    body = {'values': data_matrix}
-    sheet.values().update(
-        spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=range_name,
-        valueInputOption="USER_ENTERED", body=body
-    ).execute()
-
-# --- ASSIGNMENTS HELPER FUNCTIONS ---
-def fetch_assignments():
-    try:
-        res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=ASSIGNMENTS_RANGE).execute()
-        rows = res.get('values', [])
-        assignments = []
-        if len(rows) > 1:
-            for idx, r in enumerate(rows[1:]):
-                r.extend([""] * (5 - len(r))) # Pad empty cells
-                assignments.append({
-                    "row_index": idx + 2,
-                    "doc_id": r[0],
-                    "doc_name": r[1],
-                    "translator": r[2].lower().strip(),
-                    "reviewer": r[3].lower().strip(),
-                    "status": r[4]
-                })
-        return assignments
-    except Exception as e:
-        st.error(f"Error fetching assignments: {e}")
-        return []
-
-def assign_task(doc_id, doc_name, translator_email, reviewer_email):
-    sheet = sheets_service.spreadsheets()
-    # Determine initial status based on presence of translator
-    initial_status = "Pending Review" if not translator_email else "Pending Translation"
-    body = {'values': [[doc_id, doc_name, translator_email, reviewer_email, initial_status]]}
-    sheet.values().append(
-        spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
-        range=ASSIGNMENTS_RANGE,
-        valueInputOption="USER_ENTERED", 
-        body=body
-    ).execute()
-
-def update_assignment_status(doc_id, new_status):
-    assignments = fetch_assignments()
-    for task in assignments:
-        if task['doc_id'] == doc_id:
-            range_name = f"'Assignments'!E{task['row_index']}"
-            sheets_service.spreadsheets().values().update(
-                spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=range_name,
-                valueInputOption="USER_ENTERED", body={'values': [[new_status]]}
-            ).execute()
-            break
-
-# --- LOGIN SCREEN ---
-def login_screen():
-    if st.session_state.get("authenticated"):
-        return True
-
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.title("🤝 12-Step AI Suite")
-        st.caption("Volunteer Translation & Review Portal")
-        with st.container(border=True):
-            email = st.text_input("Enter your registered email address").strip().lower()
-            if st.button("Access Portal", type="primary", use_container_width=True):
-                volunteers = fetch_volunteers()
-                if email in volunteers:
-                    user_data = volunteers[email]
-                    if user_data["status"].lower() != "active":
-                        st.error("Account suspended. Please contact the coordinator.")
-                    else:
-                        st.session_state["authenticated"] = True
-                        st.session_state["user_email"] = email
-                        st.session_state["user_role"] = user_data["role"]
-                        st.session_state["user_name"] = user_data["name"]
-                        
-                        if user_data["role"] == "admin": st.session_state["app_mode"] = "God Mode"
-                        elif user_data["role"] == "translator": st.session_state["app_mode"] = "Translator Mode"
-                        else: st.session_state["app_mode"] = "Reviewer Mode"
-                        st.rerun()
-                else:
-                    st.error("Email not recognized. Please verify with the core team.")
-    return False
-
-if not login_screen():
-    st.stop()
-
-# --- STATE MANAGEMENT ---
-if 'processed_data' not in st.session_state: st.session_state['processed_data'] = None
-if 'source_file_id' not in st.session_state: st.session_state['source_file_id'] = None
-if 'session_row_index' not in st.session_state: st.session_state['session_row_index'] = None
-if 'active_task' not in st.session_state: st.session_state['active_task'] = None
-
-# ==========================================
-# 3. GOD MODE (ADMIN DASHBOARD)
-# ==========================================
-if st.session_state.get("app_mode") == "God Mode":
-    col_title, col_logout = st.columns([5, 1])
-    with col_title: st.title("⚡ Central Command: God Mode")
-    with col_logout:
-        if st.button("🚪 Logout", use_container_width=True):
-            st.session_state.clear()
-            st.rerun()
-        
-    st.divider()
-    
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📡 Live Radar", "👥 Volunteers", "📖 Glossary", "🗂️ Assignment Desk", "📢 Broadcast"
-    ])
-    
-    # --- TAB 1: LIVE RADAR ---
-    with tab1:
-        st.subheader("Active Document Locks")
-        res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
-        session_rows = res.get('values', [])
-        active_locks = False
-        if len(session_rows) > 1:
-            for idx, row in enumerate(session_rows[1:]): 
-                if len(row) > 1 and row[1]: 
-                    active_locks = True
-                    doc_id, locked_by = row[0], row[1]
-                    ts = float(row[2]) if len(row) > 2 and row[2] else 0
-                    time_locked = round((time.time() - ts) / 60, 1) if ts else 0
-                    
-                    with st.container(border=True):
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.markdown(f"🔒 Locked by **{locked_by}** for `{time_locked} minutes`")
-                            st.caption(f"Doc ID: {doc_id}")
-                        with col2:
-                            if st.button("🧨 Kill Lock", key=f"kill_{idx}", use_container_width=True):
-                                sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{idx+2}:D{idx+2}", valueInputOption="USER_ENTERED", body={'values': [["", "", "", ""]]}).execute()
-                                st.rerun()
-        if not active_locks:
-            st.info("No active sessions right now. All clear!")
-
-    # --- TAB 2: VOLUNTEERS DATABASE ---
-    with tab2:
-        st.subheader("Manage Volunteer Access")
-        try:
-            res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=VOLUNTEERS_RANGE).execute()
-            vol_data = res.get('values', [])
-            if not vol_data: vol_data = [["Email", "Name", "Role", "Status"]]
-            
-            df_vol = pd.DataFrame(vol_data[1:], columns=vol_data[0])
-            edited_vol = st.data_editor(
-                df_vol, num_rows="dynamic", use_container_width=True,
-                column_config={
-                    "Role": st.column_config.SelectboxColumn("Role", options=["translator", "reviewer", "admin"], required=True),
-                    "Status": st.column_config.SelectboxColumn("Status", options=["Active", "Suspended"], required=True)
-                }
-            )
-            if st.button("💾 Save Volunteers", type="primary"):
-                clean_df = edited_vol.fillna("")
-                overwrite_sheet_data(VOLUNTEERS_RANGE, [clean_df.columns.tolist()] + clean_df.values.tolist())
-                st.success("Volunteers updated!")
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-    # --- TAB 3: GLOSSARY COMMAND CENTER ---
-    with tab3:
-        st.subheader("Live Terminology Editor")
-        try:
-            res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_RANGE).execute()
-            glos_data = res.get('values', [])
-            headers = ["ID", "Category", "English", "Arabic"]
-            
-            rows_to_display = []
-            if glos_data and len(glos_data) > 0:
-                if len(glos_data[0]) == 4 and not glos_data[0][0].isdigit():
-                    headers = [str(h).strip() for h in glos_data[0]]
-                    rows_to_display = glos_data[1:]
-                else:
-                    rows_to_display = glos_data
-            
-            cleaned_rows = []
-            for row in rows_to_display:
-                padded = list(row) + [""] * (4 - len(row))
-                cleaned_rows.append(padded[:4])
-                
-            if not cleaned_rows: cleaned_rows = [["1", "General", "", ""]]
-                
-            df_glos = pd.DataFrame(cleaned_rows, columns=headers)
-            edited_glos = st.data_editor(df_glos, num_rows="dynamic", use_container_width=True)
-            
-            if st.button("💾 Sync Glossary to AI", type="primary"):
-                clean_df = edited_glos.fillna("")
-                overwrite_sheet_data(GLOSSARY_RANGE, [clean_df.columns.tolist()] + clean_df.values.tolist())
-                st.success("Glossary synced successfully!")
-                st.cache_data.clear()
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-    # --- TAB 4: ASSIGNMENT DESK ---
-    with tab4:
-        st.subheader("Workflow Assignment Desk")
-        st.info("💡 **ملاحظة:** تعيين المترجم (اختياري). إذا لم يتوفر مترجم بشري، اترك خانة المترجم على خيار (تخطي). سيقوم الذكاء الاصطناعي بترجمة الملف بالكامل وإرساله مباشرة إلى صندوق مهام المدقق.")
-        
-        # 1. Fetch Year Folders dynamically
-        year_query = f"mimeType='application/vnd.google-apps.folder' and name contains 'Edition' and trashed=false"
-        year_res = drive_service.files().list(q=year_query, fields="files(id, name)").execute()
-        year_folders = year_res.get('files', [])
-        
-        if year_folders:
-            year_options = {f['name']: f['id'] for f in year_folders}
-            selected_year_name = st.selectbox("1. Select Year Folder:", options=list(year_options.keys()))
-            year_id = year_options[selected_year_name]
-            
-            # 2. Fetch Month Subfolders
-            month_query = f"'{year_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
-            month_res = drive_service.files().list(q=month_query, fields="files(id, name)").execute()
-            month_folders = month_res.get('files', [])
-            
-            if month_folders:
-                month_options = {f['name']: f['id'] for f in month_folders}
-                selected_month_name = st.selectbox("2. Select Month Folder:", options=list(month_options.keys()))
-                month_id = month_options[selected_month_name]
-                
-                if st.button("🔄 Fetch Documents"):
-                    st.session_state['scanned_month_id'] = month_id
-            else:
-                st.warning("No subfolders found in this year.")
-        else:
-            st.warning("No Year folders containing 'Edition' found in Drive.")
-            
-        st.divider()
-        
-        # 3. List Documents and Assign
-        if 'scanned_month_id' in st.session_state:
-            doc_query = f"'{st.session_state['scanned_month_id']}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false"
-            doc_res = drive_service.files().list(q=doc_query, fields="files(id, name)").execute()
-            files = doc_res.get('files', [])
-            
-            vols = fetch_volunteers()
-            translators = ["(تخطي) الذكاء الاصطناعي فقط"] + [e for e, d in vols.items() if d['role'] in ['translator', 'admin'] and d['status'] == 'Active']
-            reviewers = ["(إجباري) اختر المدقق..."] + [e for e, d in vols.items() if d['role'] in ['reviewer', 'admin'] and d['status'] == 'Active']
-            
-            if files:
-                for idx, f in enumerate(files):
-                    with st.container(border=True):
-                        st.markdown(f"📄 **{f['name']}**")
-                        c1, c2, c3 = st.columns([2, 2, 1])
-                        with c1:
-                            trans = st.selectbox("Translator (Optional):", translators, key=f"t_{f['id']}")
-                        with c2:
-                            rev = st.selectbox("Reviewer (Mandatory):", reviewers, key=f"r_{f['id']}")
-                        with c3:
-                            st.write("")
-                            st.write("")
-                            if st.button("🚀 Assign", key=f"btn_{f['id']}", type="primary"):
-                                if rev == "(إجباري) اختر المدقق...":
-                                    st.error("Please select a valid Reviewer.")
-                                else:
-                                    final_trans = "" if trans.startswith("(تخطي)") else trans
-                                    assign_task(f['id'], f['name'], final_trans, rev)
-                                    msg = f"Task assigned! Skipped human translation." if not final_trans else f"Task assigned to {final_trans} -> {rev}."
-                                    st.success(f"✅ {msg}")
-            else:
-                st.info("No documents found in this folder.")
-
-    # --- TAB 5: BROADCAST ---
-    with tab5:
-        st.subheader("Team Broadcast System")
-        broadcast_subject = st.text_input("Subject")
-        broadcast_message = st.text_area("Message Body", height=150)
-        if st.button("🚀 Send Broadcast", type="primary"):
-            st.success("Feature ready! (SMTP execution skipped in this preview).")
-
-    st.stop() # END GOD MODE
 
 # ==========================================
 # 4. INITIALIZE AI & CORE LOGIC
@@ -770,7 +394,7 @@ class ReviewBatchResult(BaseModel):
     items: list[ReviewBatchItem]
 
 def get_fallback_models():
-    return ["gemini-2.5-flash", "gemini-1.5-flash"] # Replace with valid model names per GenAI SDK capabilities.
+    return ["gemini-2.5-flash", "gemini-1.5-flash"] 
 
 def manage_document_lock(file_id: str, user_email: str):
     try:
@@ -917,7 +541,6 @@ def push_reviewer(doc_id, segments):
         return True
     except Exception: return False
 
-
 # ==========================================
 # 5. USER DASHBOARD (TASK INBOX)
 # ==========================================
@@ -946,25 +569,21 @@ if not st.session_state['active_task']:
             my_tasks.append(t)
         elif st.session_state["app_mode"] == "Reviewer Mode" and t['reviewer'] == st.session_state["user_email"] and t['status'] == "Pending Review":
             my_tasks.append(t)
-            
-    if my_tasks:
-        for t in my_tasks:
-            st.markdown(f'<div class="task-card">', unsafe_allow_html=True)
-            col_t1, col_t2 = st.columns([4, 1])
-            with col_t1:
-                st.markdown(f"### 📄 {t['doc_name']}")
-                st.caption(f"Status: {t['status']} | Doc ID: `{t['doc_id']}`")
-            with col_t2:
-                st.write("")
-                if st.button("🚀 Start Work", key=f"start_{t['doc_id']}", type="primary", use_container_width=True):
-                    st.session_state['active_task'] = t
-                    st.session_state['source_file_id'] = t['doc_id']
-                    st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
+
+    if not my_tasks:
+        st.success("🎉 لا توجد مهام معلقة في صندوقك حالياً. عمل رائع!")
     else:
-        st.success("🎉 You have no pending tasks! Enjoy your day.")
-        
-    st.stop() # Wait for user to select a task
+        for task in my_tasks:
+            doc_id, doc_name, t_email, r_email, status = task['doc_id'], task['doc_name'], task['translator'], task['reviewer'], task['status']
+            with st.container(border=True):
+                c1, c2 = st.columns([4, 1])
+                c1.markdown(f"📄 **{doc_name}**")
+                c1.caption(f"الحالة: `{status}`")
+                if c2.button("🚀 بدء العمل", key=f"start_{doc_id}", type="primary", use_container_width=True):
+                    st.session_state['active_task'] = task
+                    st.session_state['source_file_id'] = doc_id
+                    st.rerun()
+    st.stop() # Wait for user to pick a task
 
 # ==========================================
 # 6. ACTIVE WORKSPACE
@@ -987,7 +606,7 @@ if not st.session_state['processed_data']:
     elif lock["status"] == "recovered":
         st.session_state['session_row_index'] = lock["row_index"]
         st.session_state['processed_data'] = lock["data"]
-        st.success("♻️️ **Session Recovered.**")
+        st.success("♻ **Session Recovered.**")
     elif lock["status"] == "clear":
         st.session_state['session_row_index'] = lock["row_index"]
         paras = extract_text_from_drive(file_id)
