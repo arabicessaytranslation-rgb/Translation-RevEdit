@@ -110,7 +110,7 @@ GLOSSARY_RANGE = "'المصطلحات'!A:D"
 GLOSSARY_DATA_RANGE = "'المصطلحات'!C:D"
 SESSIONS_RANGE = "'Sessions'!A:D"
 VOLUNTEERS_RANGE = "'Volunteers'!A:D"
-ASSIGNMENTS_RANGE = "'Assignments'!A:I"  # Expanded to include Stage_Start_Date
+ASSIGNMENTS_RANGE = "'Assignments'!A:I" 
 
 LOCK_TIMEOUT_SECONDS = 14400
 ADMIN_REFRESH_COOLDOWN_SECONDS = 600
@@ -142,7 +142,7 @@ RETRYABLE_KEYWORDS = ("503", "500", "high demand", "429", "timeout", "Quota")
 # ==========================================
 # 2. GOOGLE SERVICES & AUTHENTICATION
 # ==========================================
-@st.cache_resource(ttl=300)
+# تم إزالة Cache لحماية الذاكرة ومنع انهيار malloc
 def get_google_services():
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
@@ -323,7 +323,7 @@ def login_screen():
         with st.container(border=True):
             with st.form("login_form"):
                 email = st.text_input("Enter your registered email address:").strip().lower()
-                if st.form_submit_button("Access Portal", type="primary", use_container_width=True):
+                if st.form_submit_button("Access Portal", type="primary", width="stretch"):
                     volunteers = fetch_volunteers()
                     if email in volunteers:
                         user_data = volunteers[email]
@@ -392,7 +392,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                     
                     col_scan.write("")
                     col_scan.write("")
-                    if col_scan.button("🔄 Load Edition Workspace", type="primary", use_container_width=True):
+                    if col_scan.button("🔄 Load Edition Workspace", type="primary", width="stretch"):
                         st.session_state["active_edition_id"] = month_options[sel_month]
                         st.session_state["active_edition_name"] = sel_month
                 else:
@@ -411,7 +411,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                 assgn_map = {a.get("doc_id"): a for a in assignments}
                 
                 if docs_in_drive:
-                    # Metrics calculation
                     c_total = len(docs_in_drive)
                     c_unassigned = sum(1 for d in docs_in_drive if d.get("id") not in assgn_map)
                     c_translating = sum(1 for d in docs_in_drive if d.get("id") in assgn_map and "Translation" in assgn_map[d.get("id")].get("status", ""))
@@ -441,7 +440,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                         task = assgn_map.get(doc_id)
                         
                         with st.container(border=True):
-                            if task: # Assigned Task
+                            if task: 
                                 cur_st = task.get("status")
                                 t_lbl = format_vol_label(task.get("translator")) if task.get("translator") else "🤖 AI Bypass"
                                 r_lbl = format_vol_label(task.get("reviewer"))
@@ -459,10 +458,10 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                                     st.markdown(badge, unsafe_allow_html=True)
                                     st.caption(f"Due: {due_date}")
                                 with c_manage:
-                                    with st.popover("⚙️ Update", use_container_width=True):
+                                    with st.popover("⚙️ Update", width="stretch"):
                                         new_s = st.selectbox("Stage:", ALL_STATUSES, index=ALL_STATUSES.index(cur_st) if cur_st in ALL_STATUSES else 0, key=f"s_{doc_id}")
                                         new_rec = st.selectbox("Recorder:", rec_options, format_func=format_vol_label, key=f"rec_{doc_id}")
-                                        if st.button("Save", key=f"b_up_{doc_id}", type="primary", use_container_width=True):
+                                        if st.button("Save", key=f"b_up_{doc_id}", type="primary", width="stretch"):
                                             final_rec = "" if new_rec == rec_options[0] else new_rec
                                             reset_clock = (new_s != cur_st and "Completed" in cur_st) or (new_s != cur_st and "Started" in new_s)
                                             
@@ -472,7 +471,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                                                 if final_rec != task.get("recorder"): 
                                                     assign_task_to_sheet(doc_id, doc_name, task.get("translator"), task.get("reviewer"), final_rec, new_s, task.get("sla_track"))
                                                 st.rerun()
-                            else: # Unassigned Task
+                            else: 
                                 cn, ct, cr, crec, csla, cb = st.columns([2.5, 1.5, 1.5, 1.5, 1, 1])
                                 with cn:
                                     st.markdown(f"📄 **[{doc_name}](https://docs.google.com/document/d/{doc_id}/edit)**")
@@ -486,7 +485,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                                 with csla:
                                     sla_sel = st.selectbox("SLA", ["15 Days", "20 Days"], key=f"sla_{doc_id}", label_visibility="collapsed")
                                 with cb:
-                                    if st.button("🚀 Assign", key=f"btn_{doc_id}", type="primary", use_container_width=True):
+                                    if st.button("🚀 Assign", key=f"btn_{doc_id}", type="primary", width="stretch"):
                                         if r_sel == r_options[0]:
                                             st.error("Reviewer mandatory!")
                                         else:
@@ -729,7 +728,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
             months = ["1 - January", "2 - February", "3 - March", "4 - April", "5 - May", "6 - June", "7 - July", "8 - August", "9 - September", "10 - October", "11 - November", "12 - December"]
             sel_month = c_month.selectbox("Month:", months)
 
-            if st.button("🚀 Trigger Preparation Bot", type="primary", use_container_width=True):
+            if st.button("🚀 Trigger Preparation Bot", type="primary", width="stretch"):
                 if not raw_link: st.error("❌ الرجاء إدخال رابط المجلد أولاً.")
                 else:
                     with st.spinner("⏳ Sending command to Backend Bot..."):
@@ -757,7 +756,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
 if not st.session_state.get("source_file_id"):
     col_t, col_l = st.columns([5, 1])
     col_t.title("⚙ 12-Step AI Suite")
-    if col_l.button("🚪 Logout", use_container_width=True):
+    if col_l.button("🚪 Logout", width="stretch"):
         st.session_state.clear()
         st.rerun()
 
@@ -795,8 +794,8 @@ if not st.session_state.get("source_file_id"):
                 with c2:
                     st.write("")
                     btn_text = "🚀 Start Work" if "Assigned" in cur_s else "🔄 Continue Working"
-                    if st.button(btn_text, key=f"start_{task.get('doc_id')}", type="primary", use_container_width=True):
-                        reset_clock = "Assigned" in cur_st
+                    if st.button(btn_text, key=f"start_{task.get('doc_id')}", type="primary", width="stretch"):
+                        reset_clock = "Assigned" in cur_s
                         if cur_s == STATUS_TRANS_ASSIGNED:
                             update_assignment_status(task.get("doc_id"), STATUS_TRANS_STARTED, reset_timer=reset_clock)
                             task["status"] = STATUS_TRANS_STARTED
@@ -1095,7 +1094,7 @@ def _parse_docs_elements(elements):
                     paras.extend(_parse_docs_elements(cell.get("content", [])))
     return paras
 
-def extract_text_from_drive(file_id: str, is_retry=False):
+def extract_text_from_drive(file_id, is_retry=False):
     try:
         docs_svc, drive_svc, _ = get_google_services()
         file_meta = drive_svc.files().get(fileId=file_id, fields="mimeType, parents").execute()
@@ -1126,7 +1125,6 @@ def extract_text_from_drive(file_id: str, is_retry=False):
     except Exception as e:
         err_str = str(e)
         if ("Broken pipe" in err_str or "Errno 32" in err_str) and not is_retry:
-            get_google_services.clear()
             return extract_text_from_drive(file_id, is_retry=True)
         st.error(f"Could not read document from Drive. Error: {e}")
         return None
@@ -1228,7 +1226,7 @@ app_mode = st.session_state.get("app_mode")
 if app_mode == "Recorder Mode":
     col_h1, col_h2 = st.columns([5, 1])
     col_h1.markdown(f"## 🎙️ Recording Studio: `{task.get('doc_name')}`")
-    if col_h2.button("⬅️ Back to Inbox", use_container_width=True):
+    if col_h2.button("⬅️ Back to Inbox", width="stretch"):
         st.session_state["active_task"] = None
         st.session_state["source_file_id"] = None
         st.rerun()
@@ -1257,7 +1255,7 @@ if app_mode == "Recorder Mode":
         if final_audio_file is not None:
             st.success("✅ Audio Ready for submission!")
             st.audio(final_audio_file)
-            if st.button("🚀 Upload & Complete Task", type="primary", use_container_width=True):
+            if st.button("🚀 Upload & Complete Task", type="primary", width="stretch"):
                 with st.spinner("Uploading to Google Drive... Please do not close the window."):
                     parent_folder = st.session_state.get("active_task_parent_folder", "")
                     file_link = upload_audio_to_drive(final_audio_file, task.get("doc_name"), parent_folder)
@@ -1285,7 +1283,7 @@ col_h1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
 
 with col_h2:
     c_btn, c_glos = st.columns([1, 1])
-    if c_btn.button("⬅️ Back to Inbox", use_container_width=True):
+    if c_btn.button("⬅️ Back to Inbox", width="stretch"):
         st.session_state["active_task"] = None
         st.session_state["source_file_id"] = None
         st.session_state["processed_data"] = None
@@ -1528,11 +1526,11 @@ if approved_count == total_segments and total_segments > 0:
 
     if not st.session_state["review_unlocked"]:
         st.error("🚨 **CRITICAL STEP:** Please verify the narrative flow before finalizing.")
-        if st.button("👀 I confirm the final text is correct", use_container_width=True):
+        if st.button("👀 I confirm the final text is correct", width="stretch"):
             st.session_state["review_unlocked"] = True
             st.rerun()
     else:
-        if st.button("🚀 Push to Drive & Conclude Stage", type="primary", use_container_width=True):
+        if st.button("🚀 Push to Drive & Conclude Stage", type="primary", width="stretch"):
             with st.spinner("Processing Drive updates and concluding workflow..."):
                 if app_mode == "Translator Mode":
                     ar_compiled = "\n\n".join([str(item) for item in finalized_data])
