@@ -366,16 +366,32 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
         v_name = vols.get(email_key, {}).get("name")
         return f"{v_name} ({email_key})" if v_name else email_key
 
-    # ---------------------------------------------------------
+# ---------------------------------------------------------
     # TAB 1: EDITION DASHBOARD (Unified Tracker & Assignment)
     # ---------------------------------------------------------
     with tab_dash:
-        st.subheader("🎛️ Unified Edition Dashboard")
-        st.caption("اختر العدد لسحب المقالات من درايف ومطابقتها مع المهام الموزعة والمهل الزمنية.")
+        col_head, col_ref = st.columns([4, 1])
+        with col_head:
+            st.subheader("🎛️ Unified Edition Dashboard")
+            st.caption("اختر العدد لسحب المقالات من درايف ومطابقتها مع المهام الموزعة والمهل الزمنية.")
+            
+        with col_ref:
+            curr_time = time.time()
+            time_since_refresh = curr_time - st.session_state["admin_last_refresh"]
+            if st.button("🔄 Refresh Data", type="primary", width="stretch"):
+                if time_since_refresh < ADMIN_REFRESH_COOLDOWN_SECONDS:
+                    mins_left = int((ADMIN_REFRESH_COOLDOWN_SECONDS - time_since_refresh) // 60)
+                    secs_left = int((ADMIN_REFRESH_COOLDOWN_SECONDS - time_since_refresh) % 60)
+                    st.warning(f"Cooldown active. Please wait {mins_left}m {secs_left}s.")
+                else:
+                    st.session_state["admin_last_refresh"] = curr_time
+                    st.cache_data.clear() # Force fetch fresh data
+                    st.rerun()
 
         try:
             folder_res = drive_service.files().list(q="mimeType='application/vnd.google-apps.folder' and trashed=false", fields="files(id, name)").execute()
             all_folders = folder_res.get("files", [])
+            # ... (باقي الكود يستمر كما هو) ...
             year_folders = [f for f in all_folders if "Edition" in f["name"] or "202" in f["name"]]
 
             if year_folders:
