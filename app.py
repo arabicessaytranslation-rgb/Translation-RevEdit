@@ -194,7 +194,7 @@ def calculate_sla_status(status, sla_track, start_date_str):
 
     return due_date.strftime("%d %b %Y"), remaining, badge
 
-# --- LOGIN SCREEN (SECURE OIDC / NATIVE) ---
+# --- LOGIN SCREEN (ROBUST & RESILIENT) ---
 def login_screen():
     if st.session_state.get("authenticated"): return True
 
@@ -203,34 +203,35 @@ def login_screen():
         st.title("🤝 12-Step AI Suite")
         st.caption("Volunteer Translation, Review & Recording Portal")
         with st.container(border=True):
-            try:
-                # Streamlit Native Auth (Google OIDC)
-                if not st.experimental_user.is_logged_in:
-                    st.info("🔒 يرجى تسجيل الدخول بحساب Google المعتمد في الخدمة.")
-                    if st.button("تسجيل الدخول (Google Login)", type="primary", width="stretch"):
-                        st.login()
-                    st.stop()
-
-                email = st.experimental_user.email.strip().lower()
-                volunteers = fetch_volunteers()
+            with st.form("login_form"):
+                email = st.text_input("Enter your registered email address:").strip().lower()
+                submitted = st.form_submit_button("Access Portal", type="primary", width="stretch")
                 
-                if email in volunteers:
-                    user_data = volunteers[email]
-                    if user_data.get("status", "").lower() != "active":
-                        st.error("حسابك موقوف مؤقتاً. يرجى مراجعة المنسق.")
-                        if st.button("تسجيل الخروج"): st.logout()
+                if submitted:
+                    if not email:
+                        st.warning("يرجى كتابة البريد الإلكتروني.")
                     else:
-                        st.session_state.update({"authenticated": True, "user_email": email, "user_role": user_data.get("role"), "user_name": user_data.get("name")})
-                        role = user_data.get("role")
-                        st.session_state["app_mode"] = "God Mode" if role == "admin" else f"{role.capitalize()} Mode"
-                        st.rerun()
-                else:
-                    st.error(f"الإيميل '{email}' غير مسجل في قاعدة المتطوعين.")
-                    if st.button("تسجيل الخروج"): st.logout()
-
-            except AttributeError:
-                st.error("⚠️ إصدار Streamlit لديك قديم. يرجى التحديث إلى النسخة 1.38 أو أحدث لدعم نظام الأمان الجديد.")
-                st.stop()
+                        volunteers = fetch_volunteers()
+                        if email in volunteers:
+                            user_data = volunteers[email]
+                            status = str(user_data.get("status", "")).strip().lower()
+                            
+                            if status != "active":
+                                st.error("⛔ الحساب موقوف حالياً. يرجى التواصل مع المنسق.")
+                            else:
+                                raw_role = str(user_data.get("role", "")).strip().lower()
+                                mode = "God Mode" if raw_role == "admin" else f"{raw_role.capitalize()} Mode"
+                                
+                                st.session_state.update({
+                                    "authenticated": True,
+                                    "user_email": email,
+                                    "user_role": raw_role,
+                                    "user_name": user_data.get("name", "زميل"),
+                                    "app_mode": mode
+                                })
+                                st.rerun()
+                        else:
+                            st.error("البريد الإلكتروني غير مدرج في قائمة المتطوعين المصرح لهم.")
     return False
 
 if not login_screen(): st.stop()
@@ -248,7 +249,8 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
     col1, col2 = st.columns([5, 1])
     col1.title("⚡ Central Command: God Mode")
     if col2.button("🚪 Logout", type="primary"):
-        st.logout()
+        st.session_state.clear()
+        st.rerun()
 
     tab_dash, tab_dispatch, tab_heatmap, tab_vols, tab_glos, tab_bcast, tab_prep = st.tabs([
         "🎛 Edition Dashboard", "📩 Dispatcher", "🔥 Glossary Heatmap", "👥 Volunteers", "📖 Glossary", "📢 Broadcast", "🤖 Auto-Prep Bot"
@@ -539,7 +541,8 @@ if not st.session_state.get("source_file_id"):
     col_t, col_l = st.columns([5, 1])
     col_t.title("⚙ 12-Step AI Suite")
     if col_l.button("🚪 Logout", width="stretch"):
-        st.logout()
+        st.session_state.clear()
+        st.rerun()
 
     st.subheader(f"👋 Welcome, {st.session_state.get('user_name')} | Role: {st.session_state.get('user_role', '').capitalize()}")
     st.markdown("---")
