@@ -14,6 +14,7 @@ from googleapiclient.http import MediaIoBaseUpload
 import pandas as pd
 from pydantic import BaseModel, Field
 import streamlit as st
+import base64
 
 # --- Google GenAI SDK ---
 try:
@@ -1174,61 +1175,43 @@ def extract_text_from_drive(file_id: str, is_retry=False):
     return None
 
 def upload_audio_to_drive(uploaded_file, doc_name, parent_folder_id):
-  """Uploads audio file (MP3 or WAV) directly to Google Drive."""
+  """Uploads audio file to Google Drive via Google Apps Script to bypass Service Account Quota."""
   try:
-    _, drive_svc, _ = get_google_services()
+    gas_webhook_url = st.secrets.get("GAS_WEBAPP_URL")
+    if not gas_webhook_url:
+        st.error("⚠️️ يرجى التأكد من إضافة 'GAS_WEBAPP_URL' في إعدادات secrets.")
+        return None
+
     clean_title = re.sub(r'[\\/*?:"<>|]', '', doc_name).strip()
-    
     file_ext = uploaded_file.name.split('.')[-1] if hasattr(uploaded_file, 'name') and uploaded_file.name else 'wav'
     mime_type = uploaded_file.type if hasattr(uploaded_file, 'type') and uploaded_file.type else 'audio/wav'
     file_name = f"{clean_title}.{file_ext}"
 
-    file_metadata = {
-        'name': file_name,
-        'parents': [parent_folder_id],
-        'mimeType': mime_type,
+    # تحويل الملف الصوتي إلى Base64 لإرساله بأمان
+    file_bytes = uploaded_file.getvalue()
+    file_b64 = base64.b64encode(file_bytes).decode('utf-8')
+
+    payload = {
+        "action": "upload_audio",
+        "parent_folder_id": parent_folder_id,
+        "file_name": file_name,
+        "mime_type": mime_type,
+        "file_base64": file_b64
     }
-    media = MediaIoBaseUpload(io.BytesIO(uploaded_file.read()), mimetype=mime_type, resumable=True)
-    drive_file = drive_svc.files().create(body=file_metadata, media_body=media, fields='id, webViewLink, webContentLink').execute()
-    return drive_file.get('webViewLink')
+
+    # إرسال الملف إلى السكربت ليقوم هو بحفظه في الدرايف
+    response = requests.post(gas_webhook_url, json=payload)
+    res_data = response.json()
+
+    if res_data.get("status") == "success":
+        return res_data.get("webViewLink")
+    else:
+        st.error(f"GAS Upload Error: {res_data.get('message')}")
+        return None
+
   except Exception as e:
-    st.error(f'Failed to upload audio to Google Drive: {e}')
+    st.error(f'Failed to upload audio to Google Drive via Backend: {e}')
     return None
-
-def smart_align(paragraphs):
-  en_paras = [p for p in paragraphs if not re.search(r"[\u0600-\u06FF]", p.get("text", ""))]
-  ar_paras = [p for p in paragraphs if re.search(r"[\u0600-\u06FF]", p.get("text", ""))]
-  aligned = []
-  for i in range(max(len(en_paras), len(ar_paras))):
-    en_obj = en_paras[i] if i < len(en_paras) else {"text": "[MISSING ENGLISH SOURCE]"}
-    ar_obj = ar_paras[i] if i < len(ar_paras) else {"text": "[MISSING ARABIC TRANSLATION]", "start": None, "end": None}
-    aligned.append({"id": i + 1, "english": en_obj.get("text", ""), "arabic": ar_obj.get("text", ""), "ar_start": ar_obj.get("start"), "ar_end": ar_obj.get("end")})
-  return aligned
-
-def push_to_drive_translator(document_id, final_arabic_text):
-  docs_svc, _, _ = get_google_services()
-  try:
-    requests = [{'insertPageBreak': {'location': {'index': 1}}}, {'insertText': {'location': {'index': 1}, 'text': final_arabic_text + "\n\n"}}]
-    docs_svc.documents().batchUpdate(documentId=document_id, body={"requests": requests}).execute()
-    return True
-  except Exception as e:
-    st.error(f"Failed to push to Drive. Error: {e}")
-    return False
-
-def push_to_drive_reviewer(document_id, approved_segments):
-  docs_svc, _, _ = get_google_services()
-  try:
-    valid_segments = [seg for seg in approved_segments if seg.get("ar_start") is not None and seg.get("ar_end") is not None]
-    valid_segments.sort(key=lambda x: x["ar_start"], reverse=True)
-    requests = []
-    for seg in valid_segments:
-      requests.append({"deleteContentRange": {"range": {"startIndex": seg["ar_start"], "endIndex": seg["ar_end"] - 1}}})
-      requests.append({"insertText": {"location": {"index": seg["ar_start"]}, "text": seg.get("final_arabic", "")}})
-    if requests: docs_svc.documents().batchUpdate(documentId=document_id, body={"requests": requests}).execute()
-    return True
-  except Exception as e:
-    st.error(f"Failed to push to Drive. Error: {e}")
-    return False
 
 
 # ==========================================
