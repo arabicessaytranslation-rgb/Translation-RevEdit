@@ -946,4 +946,628 @@ def _call_gemini(model_name, prompt, schema_type):
         model=model_name, contents=prompt,
         config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema_type, safety_settings=safety_settings, temperature=0.2),
     )
-    clean_text = response.text.replace("```json", "").replace("
+    clean_text = response.text.replace("```json", "").replace("```", "").strip()
+    match = re.search(r"\{.*\}", clean_text, re.DOTALL)
+    if match: clean_text = match.group(0)
+    return json.loads(clean_text)
+
+# --- RECOVERY FELLOWSHIP LITERARY PROMPTS ---
+def translate_with_ai(english: str, glossary_text: str):
+    prompt = f"""You are a master literary and technical translator between Arabic and English, endowed with deep bilingual erudition and extensive literary appreciation in both tongues. Above all, you possess profound, specialized expertise in the culture, ethos, and literature of 12-Step recovery fellowships.
+
+YOUR IDENTITY & PHILOSOPHY:
+- Tone of Fellowship: You convey the core spirit of recovery: humble, compassionate, clinically sound, non-judgmental, and non-moralizing. You write as an experienced fellow speaking to another.
+- Literary Eloquence without Affectation: Your Arabic is fluid, resonant, and natural (فصيحة، رصينة، منسابة بلا تقعر). You respect Arabic rhetoric, avoiding robotic literalism.
+- Pronoun & Context Awareness: Actively resolve pronouns (e.g., "it", "the program") to reflect the correct grammatical gender and cultural noun in Arabic context.
+
+MANDATORY GLOSSARY ENFORCEMENT:
+- You treat the provided recovery glossary as inviolable dogma.
+- Whenever an English recovery term matches the glossary, you MUST use the exact Arabic term provided. Never substitute it with synonyms.
+- Document every matched term transparently in 'glossary_notes'.
+
+OFFICIAL GLOSSARY:
+{glossary_text}
+
+Translate:
+English Source: "{english}"
+"""
+    for model_name in get_fallback_models():
+        for attempt in range(MAX_RETRIES_PER_MODEL):
+            try:
+                parsed = _call_gemini(model_name, prompt, TranslationResult)
+                return {"arabic_translation": parsed.get("arabic_translation", ""), "glossary_notes": parsed.get("glossary_notes", "")}
+            except Exception as e:
+                if _is_retryable(str(e)): _backoff_sleep(attempt)
+    return {"arabic_translation": "", "glossary_notes": "⚠ Error"}
+
+def review_with_ai(english: str, arabic: str, glossary_text: str):
+    prompt = f"""You are a senior bilingual literary editor and a renowned 12-Step recovery literature specialist. You master the rhetoric of both Arabic and English, with acute sensitivity to fellowship semantics.
+
+YOUR EDITORIAL CRITERIA:
+1. Spiritual & Emotional Integrity: Ensure the Arabic translation captures the exact nuance of the original English—neither diluting its psychological gravity nor turning it into moralistic preaching.
+2. Narrative Flow & Arabic Idiom: Ensure sentences flow naturally with proper Arabic syntax, punctuation, and rhythm. Eliminate clunky translative traces.
+3. Strict Terminology Audit: Verify that recovery concepts strictly adhere to the official glossary. If a term misses the specific fellowship consensus, correct it to the exact glossary equivalent and explain the recovery rationale in 'reasoning'.
+
+OFFICIAL GLOSSARY:
+{glossary_text}
+
+Review this pair:
+English Source: "{english}"
+Original Arabic: "{arabic}"
+"""
+    for model_name in get_fallback_models():
+        for attempt in range(MAX_RETRIES_PER_MODEL):
+            try:
+                parsed = _call_gemini(model_name, prompt, ReviewResult)
+                return {"status": parsed.get("status", "minor_edits"), "suggested_arabic": parsed.get("suggested_arabic", arabic), "reasoning": parsed.get("reasoning", "")}
+            except Exception as e:
+                if _is_retryable(str(e)): _backoff_sleep(attempt)
+    return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "⚠ Error"}
+
+def translate_batch_with_fallback(batch_segments, glossary_text):
+    if not GENAI_AVAILABLE or client is None:
+        return [translate_with_ai(s.get("english", ""), glossary_text) for s in batch_segments]
+    input_payload = "\n\n".join([f"ID: {s.get('id', 0)}\nText: {s.get('english', '')}" for s in batch_segments])
+
+    prompt = f"""You are a master literary and technical translator between Arabic and English, endowed with deep bilingual erudition. Above all, you possess profound, specialized expertise in the culture, ethos, and literature of 12-Step recovery fellowships.
+
+YOUR IDENTITY & PHILOSOPHY:
+- Tone of Fellowship: You convey the core spirit of recovery: humble, compassionate, clinically sound, non-judgmental, and non-moralizing. You write as an experienced fellow speaking to another.
+- Literary Eloquence without Affectation: Your Arabic is fluid, resonant, and natural (فصيحة، رصينة، منسابة بلا تقعر). You respect Arabic rhetoric, avoiding robotic literalism.
+- Pronoun & Context Awareness: Actively resolve pronouns (e.g., "it", "the program") to reflect the correct grammatical gender and cultural noun in Arabic context.
+
+MANDATORY GLOSSARY ENFORCEMENT:
+- You treat the provided recovery glossary as inviolable dogma.
+- Whenever an English recovery term matches the glossary, you MUST use the exact Arabic term provided. Never substitute it with synonyms.
+- In 'glossary_notes', explicitly list every glossary term matched and applied (e.g., "recovery -> تعافي"). If none, write "None".
+
+OFFICIAL GLOSSARY:
+{glossary_text}
+
+Segments to Translate:
+{input_payload}"""
+
+    for model_name in get_fallback_models():
+        for attempt in range(2):
+            try:
+                parsed = _call_gemini(model_name, prompt, TranslationBatchResult)
+                items = parsed.get("items", [])
+                if len(items) == len(batch_segments): return items
+            except Exception as e:
+                if _is_retryable(str(e)): _backoff_sleep(attempt)
+
+    results = []
+    for s in batch_segments:
+        res = translate_with_ai(s.get("english", ""), glossary_text)
+        results.append({"id": s.get("id", 0), "arabic_translation": res.get("arabic_translation", ""), "glossary_notes": res.get("glossary_notes", "")})
+    return results
+
+def review_batch_with_fallback(batch_segments, glossary_text):
+    if not GENAI_AVAILABLE or client is None:
+        return [review_with_ai(s.get("english", ""), s.get("arabic", ""), glossary_text) for s in batch_segments]
+    input_payload = "\n\n".join([f"ID: {s.get('id', 0)}\nEnglish: {s.get('english', '')}\nArabic: {s.get('arabic', '')}" for s in batch_segments])
+
+    prompt = f"""You are a senior bilingual literary editor and a renowned 12-Step recovery literature specialist. You master the rhetoric of both Arabic and English, with acute sensitivity to fellowship semantics.
+
+YOUR EDITORIAL CRITERIA FOR THIS BATCH:
+1. Spiritual & Emotional Integrity: Ensure the Arabic translation captures the exact nuance of the original English—neither diluting its psychological gravity nor turning it into moralistic preaching.
+2. Narrative Flow & Arabic Idiom: Ensure sentences flow naturally with proper Arabic syntax, punctuation, and rhythm. Eliminate clunky translative traces.
+3. Strict Terminology Audit: Verify that recovery concepts strictly adhere to the official glossary. If a term misses the specific fellowship consensus, correct it to the exact glossary equivalent and explain the recovery rationale in 'reasoning'.
+4. Status Assignment: 'perfect' (no edits needed), 'minor_edits' (small grammar/term corrections), 'major_rewrite' (missed core meaning or severely awkward).
+
+OFFICIAL GLOSSARY:
+{glossary_text}
+
+Pairs to Review:
+{input_payload}"""
+
+    for model_name in get_fallback_models():
+        for attempt in range(2):
+            try:
+                parsed = _call_gemini(model_name, prompt, ReviewBatchResult)
+                items = parsed.get("items", [])
+                if len(items) == len(batch_segments): return items
+            except Exception as e:
+                if _is_retryable(str(e)): _backoff_sleep(attempt)
+
+    results = []
+    for s in batch_segments:
+        res = review_with_ai(s.get("english", ""), s.get("arabic", ""), glossary_text)
+        results.append({"id": s.get("id", 0), "status": res.get("status", "minor_edits"), "suggested_arabic": res.get("suggested_arabic", ""), "reasoning": res.get("reasoning", "")})
+    return results
+
+# --- DOCUMENT & DRIVE HANDLERS ---
+def _parse_docs_elements(elements):
+    paras = []
+    for elem in elements:
+        if "paragraph" in elem:
+            para_text = ""
+            start_idx = elem.get("startIndex")
+            end_idx = elem.get("endIndex")
+            for run in elem.get("paragraph", {}).get("elements", []):
+                if "textRun" in run: para_text += run.get("textRun", {}).get("content", "")
+            clean_text = para_text.strip()
+            if bool(re.search(r"[a-zA-Z\u0600-\u06FF]", clean_text)):
+                paras.append({"text": clean_text, "start": start_idx, "end": end_idx})
+        elif "table" in elem:
+            for row in elem.get("table", {}).get("tableRows", []):
+                for cell in row.get("tableCells", []):
+                    paras.extend(_parse_docs_elements(cell.get("content", [])))
+    return paras
+
+def extract_text_from_drive(file_id: str, is_retry=False):
+    try:
+        docs_svc, drive_svc, _ = get_google_services()
+        file_meta = drive_svc.files().get(fileId=file_id, fields="mimeType, parents").execute()
+        mime_type = file_meta.get("mimeType")
+        st.session_state["active_task_parent_folder"] = file_meta.get("parents", [""])[0]
+
+        if mime_type == "application/vnd.google-apps.document":
+            try: document = docs_svc.documents().get(documentId=file_id, includeTabsContent=True).execute()
+            except Exception: document = docs_svc.documents().get(documentId=file_id).execute()
+
+            all_paras = []
+            def sweep_doc_obj(doc_obj):
+                temp_paras = []
+                temp_paras.extend(_parse_docs_elements(doc_obj.get("body", {}).get("content", [])))
+                for footer in doc_obj.get("footers", {}).values(): temp_paras.extend(_parse_docs_elements(footer.get("content", [])))
+                for header in doc_obj.get("headers", {}).values(): temp_paras.extend(_parse_docs_elements(header.get("content", [])))
+                return temp_paras
+
+            tabs = document.get("tabs", [])
+            if tabs:
+                for tab in tabs: all_paras.extend(sweep_doc_obj(tab.get("documentTab", {})))
+            else:
+                all_paras.extend(sweep_doc_obj(document))
+            return all_paras
+        else:
+            st.error(f"Unsupported file type: {mime_type}. Please use Google Docs.")
+            return None
+    except Exception as e:
+        err_str = str(e)
+        if ("Broken pipe" in err_str or "Errno 32" in err_str) and not is_retry:
+            get_google_services.clear()
+            return extract_text_from_drive(file_id, is_retry=True)
+        st.error(f"Could not read document from Drive. Error: {e}")
+        return None
+
+def upload_audio_to_drive(uploaded_file, doc_name, parent_folder_id):
+    """Uploads audio file to Google Drive via Google Apps Script Backend."""
+    try:
+        file_size_mb = uploaded_file.size / (1024 * 1024)
+        if file_size_mb > 25.0:
+            st.error(f"⚠️ حجم الملف ({file_size_mb:.1f} MB) كبير جداً. يرجى ضغط الملف.")
+            return None
+
+        gas_webhook_url = st.secrets.get("GAS_WEBAPP_URL")
+        if not gas_webhook_url:
+            st.error("⚠ يرجى التأكد من إضافة 'GAS_WEBAPP_URL' في إعدادات secrets.")
+            return None
+
+        clean_title = re.sub(r'[\\/*?:"<>|]', '', doc_name).strip()
+        file_ext = uploaded_file.name.split('.')[-1] if hasattr(uploaded_file, 'name') and uploaded_file.name else 'wav'
+        mime_type = uploaded_file.type if hasattr(uploaded_file, 'type') and uploaded_file.type else 'audio/wav'
+        file_name = f"{clean_title}.{file_ext}"
+
+        file_bytes = uploaded_file.getvalue()
+        file_b64 = base64.b64encode(file_bytes).decode('utf-8')
+
+        payload = {
+            "action": "upload_audio",
+            "parent_folder_id": parent_folder_id,
+            "file_name": file_name,
+            "mime_type": mime_type,
+            "file_base64": file_b64
+        }
+
+        response = requests.post(gas_webhook_url, json=payload, timeout=50)
+        res_data = response.json()
+
+        if res_data.get("status") == "success":
+            return res_data.get("webViewLink")
+        else:
+            st.error(f"GAS Upload Error: {res_data.get('message')}")
+            return None
+
+    except requests.exceptions.Timeout:
+        st.error("⏳ انتهى وقت الاتصال بالخادم. يرجى إعادة المحاولة.")
+        return None
+    except Exception as e:
+        st.error(f'Upload Error: {e}')
+        return None
+
+def smart_align(paragraphs):
+    en_paras = [p for p in paragraphs if not re.search(r"[\u0600-\u06FF]", p.get("text", ""))]
+    ar_paras = [p for p in paragraphs if re.search(r"[\u0600-\u06FF]", p.get("text", ""))]
+    aligned = []
+    for i in range(max(len(en_paras), len(ar_paras))):
+        en_obj = en_paras[i] if i < len(en_paras) else {"text": "[MISSING ENGLISH SOURCE]"}
+        ar_obj = ar_paras[i] if i < len(ar_paras) else {"text": "[MISSING ARABIC TRANSLATION]", "start": None, "end": None}
+        aligned.append({"id": i + 1, "english": en_obj.get("text", ""), "arabic": ar_obj.get("text", ""), "ar_start": ar_obj.get("start"), "ar_end": ar_obj.get("end")})
+    return aligned
+
+def push_to_drive_translator(document_id, final_arabic_text):
+    docs_svc, _, _ = get_google_services()
+    try:
+        requests = [{'insertPageBreak': {'location': {'index': 1}}}, {'insertText': {'location': {'index': 1}, 'text': final_arabic_text + "\n\n"}}]
+        docs_svc.documents().batchUpdate(documentId=document_id, body={"requests": requests}).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to push to Drive. Error: {e}")
+        return False
+
+def push_to_drive_reviewer(document_id, approved_segments):
+    docs_svc, _, _ = get_google_services()
+    try:
+        valid_segments = [seg for seg in approved_segments if seg.get("ar_start") is not None and seg.get("ar_end") is not None]
+        valid_segments.sort(key=lambda x: x["ar_start"], reverse=True)
+        requests = []
+        for seg in valid_segments:
+            requests.append({"deleteContentRange": {"range": {"startIndex": seg["ar_start"], "endIndex": seg["ar_end"] - 1}}})
+            requests.append({"insertText": {"location": {"index": seg["ar_start"]}, "text": seg.get("final_arabic", "")}})
+        if requests: docs_svc.documents().batchUpdate(documentId=document_id, body={"requests": requests}).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to push to Drive. Error: {e}")
+        return False
+
+# ==========================================
+# 6. ACTIVE WORKSPACE
+# ==========================================
+task = st.session_state.get("active_task")
+if not task:
+    st.session_state["source_file_id"] = None
+    st.rerun()
+
+file_id = task.get("doc_id")
+app_mode = st.session_state.get("app_mode")
+
+# ---------------------------------------------------------
+# RECORDER WORKSPACE
+# ---------------------------------------------------------
+if app_mode == "Recorder Mode":
+    col_h1, col_h2 = st.columns([5, 1])
+    col_h1.markdown(f"## 🎙️ Recording Studio: `{task.get('doc_name')}`")
+    if col_h2.button("⬅️ Back to Inbox", use_container_width=True):
+        st.session_state["active_task"] = None
+        st.session_state["source_file_id"] = None
+        st.rerun()
+
+    st.markdown(f"[🔗 Open Original Document in Google Docs](https://docs.google.com/document/d/{file_id}/edit)")
+    
+    paras = extract_text_from_drive(file_id)
+    if paras:
+        ar_paras = [p.get("text", "") for p in paras if re.search(r"[\u0600-\u06FF]", p.get("text", ""))]
+        st.markdown("### Reading Material (Final Arabic)")
+        st.markdown(f"<div class='reading-mode'>{'<br><br>'.join(ar_paras)}</div>", unsafe_allow_html=True)
+        
+        st.divider()
+        st.subheader("📤 Submit Audio Recording")
+        
+        st.info("💡 يمكنك التسجيل مباشرة من المتصفح، أو إرفاق ملف جاهز إذا قمت بتسجيله مسبقاً.")
+        
+        col_rec, col_up = st.columns(2)
+        with col_rec:
+            recorded_audio = st.audio_input("🎙️ Record directly from your mic:")
+        with col_up:
+            uploaded_audio = st.file_uploader("📂 Or upload a ready audio file (MP3/WAV):", type=["mp3", "wav", "m4a"])
+        
+        final_audio_file = recorded_audio if recorded_audio else uploaded_audio
+        
+        if final_audio_file is not None:
+            st.success("✅ Audio Ready for submission!")
+            st.audio(final_audio_file)
+            if st.button("🚀 Upload & Complete Task", type="primary", use_container_width=True):
+                with st.spinner("Uploading to Google Drive... Please do not close the window."):
+                    parent_folder = st.session_state.get("active_task_parent_folder", "")
+                    file_link = upload_audio_to_drive(final_audio_file, task.get("doc_name"), parent_folder)
+                    
+                    if file_link:
+                        update_assignment_audio_link(file_id, file_link)
+                        update_assignment_status(file_id, STATUS_REC_COMPLETED, reset_timer=False)
+                        st.balloons()
+                        st.success("Audio uploaded successfully! Task closed.")
+                        time.sleep(2)
+                        st.session_state["active_task"] = None
+                        st.session_state["source_file_id"] = None
+                        st.rerun()
+    else:
+        st.error("Could not fetch document content.")
+    st.stop()
+
+# ---------------------------------------------------------
+# TRANSLATOR / REVIEWER WORKSPACE
+# ---------------------------------------------------------
+glossary_data, glossary_term_count = fetch_glossary()
+
+col_h1, col_h2 = st.columns([4, 2])
+col_h1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
+
+with col_h2:
+    c_btn, c_glos = st.columns([1, 1])
+    if c_btn.button("⬅️ Back to Inbox", use_container_width=True):
+        st.session_state["active_task"] = None
+        st.session_state["source_file_id"] = None
+        st.session_state["processed_data"] = None
+        st.rerun()
+    with c_glos:
+        if glossary_term_count > 0:
+            st.success(f"📖 Glossary: {glossary_term_count} terms")
+        else:
+            st.warning("⚠️ Glossary: Not Loaded")
+
+peer_t = task.get('translator')
+peer_r = task.get('reviewer')
+if app_mode == "Translator Mode":
+    st.caption(f"**Assigned Reviewer for this document:** {peer_r if peer_r else 'TBD'}")
+elif app_mode == "Reviewer Mode":
+    st.caption(f"**Original Translator:** {peer_t if peer_t else '🤖 Automated AI Bypass Draft'}")
+
+st.markdown(f"[🔗 Open Document in Google Docs](https://docs.google.com/document/d/{file_id}/edit)")
+
+is_bypass_task = task.get("translator") == ""
+
+if not st.session_state.get("processed_data"):
+    lock = manage_document_lock(file_id, st.session_state.get("user_email"))
+    if lock["status"] == "blocked":
+        st.error(f"🛑 **Document In Use:** This document is currently locked by `{lock.get('locked_by', 'another user')}`.")
+        st.stop()
+    elif lock["status"] == "recovered":
+        st.session_state["session_row_index"] = lock["row_index"]
+        st.session_state["processed_data"] = lock["data"]
+        st.success("♻️ **Session Recovered.** Restored your previous work.")
+    elif lock["status"] == "clear":
+        st.session_state["session_row_index"] = lock["row_index"]
+
+        acquire_document_lock(file_id, st.session_state.get("user_email"), lock["row_index"])
+        paras = extract_text_from_drive(file_id)
+
+        if paras:
+            processed_results = []
+            progress_bar = st.progress(0)
+
+            # --- CASE A: TRANSLATOR MODE ---
+            if app_mode == "Translator Mode":
+                st.info("Extracting document content and translating via AI Batching...")
+                batches = [paras[i : i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
+                for idx, batch in enumerate(batches):
+                    batch_payload = [{"id": j + 1, "english": p.get("text", "")} for j, p in enumerate(batch)]
+                    ai_results = translate_batch_with_fallback(batch_payload, glossary_data)
+
+                    for ai_res in ai_results:
+                        ai_id = int(ai_res.get("id", 1))
+                        array_index = ai_id - 1
+                        eng_text = batch[array_index].get("text", "") if 0 <= array_index < len(batch) else batch[0].get("text", "")
+
+                        processed_results.append({
+                            "id": ai_id + (idx * BATCH_SIZE),
+                            "english": eng_text,
+                            "arabic_translation": ai_res.get("arabic_translation", ""),
+                            "glossary_notes": ai_res.get("glossary_notes", ""),
+                            "user_arabic": ai_res.get("arabic_translation", ""),
+                            "is_approved": False,
+                        })
+                    progress_bar.progress((idx + 1) / len(batches))
+
+            # --- CASE B: REVIEWER MODE ---
+            else:
+                has_arabic = any(re.search(r"[\u0600-\u06FF]", p.get("text", "")) for p in paras)
+
+                if not has_arabic or is_bypass_task:
+                    st.info("🤖 **AI Bypass Mode:** Generating initial draft and analyzing narrative flow for your review...")
+                    batches = [paras[i : i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
+
+                    draft_segments = []
+                    for idx, batch in enumerate(batches):
+                        batch_payload = [{"id": j + 1, "english": p.get("text", "")} for j, p in enumerate(batch)]
+                        ai_trans = translate_batch_with_fallback(batch_payload, glossary_data)
+                        for ai_t in ai_trans:
+                            ai_id = int(ai_t.get("id", 1))
+                            array_index = ai_id - 1
+                            eng_text = batch[array_index].get("text", "") if 0 <= array_index < len(batch) else batch[0].get("text", "")
+                            draft_segments.append({
+                                "id": ai_id + (idx * BATCH_SIZE),
+                                "english": eng_text,
+                                "arabic": ai_t.get("arabic_translation", ""),
+                                "glossary_notes": ai_t.get("glossary_notes", ""),
+                            })
+
+                    rev_batches = [draft_segments[i : i + BATCH_SIZE] for i in range(0, len(draft_segments), BATCH_SIZE)]
+                    for idx, r_batch in enumerate(rev_batches):
+                        ai_revs = review_batch_with_fallback(r_batch, glossary_data)
+                        for ai_r, d_seg in zip(ai_revs, r_batch):
+                            suggested = ai_r.get("suggested_arabic", d_seg.get("arabic", ""))
+                            status_val = ai_r.get("status", "minor_edits")
+                            processed_results.append({
+                                "id": d_seg.get("id"),
+                                "status": status_val,
+                                "english": d_seg.get("english", ""),
+                                "original_arabic": d_seg.get("arabic", ""),
+                                "suggested_arabic": suggested,
+                                "reasoning": (ai_r.get("reasoning", "") + (f" | Glossary: {d_seg.get('glossary_notes')}" if d_seg.get("glossary_notes") else "")),
+                                "ar_start": None,
+                                "ar_end": None,
+                                "user_arabic": suggested,
+                                "is_approved": (status_val == "perfect"),
+                            })
+                        progress_bar.progress((idx + 1) / len(rev_batches))
+
+                else:
+                    st.info("Extracting segments and comparing human translation against AI audit...")
+                    segments = smart_align(paras)
+                    normal_segs = [s for s in segments if s.get("english") != "[MISSING ENGLISH SOURCE]" and s.get("arabic") != "[MISSING ARABIC TRANSLATION]"]
+                    batches = [normal_segs[i : i + BATCH_SIZE] for i in range(0, len(normal_segs), BATCH_SIZE)]
+
+                    for idx, batch in enumerate(batches):
+                        ai_results = review_batch_with_fallback(batch, glossary_data)
+                        for ai_res, o_seg in zip(ai_results, batch):
+                            suggested = ai_res.get("suggested_arabic", o_seg.get("arabic", ""))
+                            status_val = ai_res.get("status", "minor_edits")
+                            processed_results.append({
+                                "id": o_seg.get("id"),
+                                "status": status_val,
+                                "english": o_seg.get("english", ""),
+                                "original_arabic": o_seg.get("arabic", ""),
+                                "suggested_arabic": suggested,
+                                "reasoning": ai_res.get("reasoning", ""),
+                                "ar_start": o_seg.get("ar_start"),
+                                "ar_end": o_seg.get("ar_end"),
+                                "user_arabic": suggested,
+                                "is_approved": (status_val == "perfect"),
+                            })
+                        progress_bar.progress((idx + 1) / len(batches))
+
+                    for item in segments:
+                        if item.get("english") == "[MISSING ENGLISH SOURCE]":
+                            processed_results.append({
+                                "id": item.get("id"),
+                                "status": "major_rewrite",
+                                "english": "[MISSING]",
+                                "original_arabic": item.get("arabic", ""),
+                                "suggested_arabic": item.get("arabic", ""),
+                                "reasoning": "⚠️ Orphaned Arabic block.",
+                                "ar_start": item.get("ar_start"),
+                                "ar_end": item.get("ar_end"),
+                                "user_arabic": item.get("arabic"),
+                                "is_approved": False,
+                            })
+                        elif item.get("arabic") == "[MISSING ARABIC TRANSLATION]":
+                            trans_res = translate_with_ai(item.get("english", ""), glossary_data)
+                            t_arabic = trans_res.get("arabic_translation", "")
+                            processed_results.append({
+                                "id": item.get("id"),
+                                "status": "major_rewrite",
+                                "english": item.get("english", ""),
+                                "original_arabic": "[MISSING]",
+                                "suggested_arabic": t_arabic,
+                                "reasoning": "⚠️ Auto-translated orphaned English block.",
+                                "ar_start": None,
+                                "ar_end": None,
+                                "user_arabic": t_arabic,
+                                "is_approved": False,
+                            })
+
+                    processed_results.sort(key=lambda x: x.get("id", 0))
+
+            save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), processed_results)
+            st.session_state["processed_data"] = processed_results
+            st.rerun()
+
+# --- EDITOR UI ---
+approved_count, finalized_data, state_modified = 0, [], False
+st.divider()
+
+for i, item in enumerate(st.session_state.get("processed_data", [])):
+    seg_id = item.get("id", i + 1)
+    status_val = item.get("status", "minor_edits")
+    eng_txt = item.get("english", "")
+    orig_ar = item.get("original_arabic", "")
+    sugg_ar = item.get("suggested_arabic", item.get("arabic_translation", ""))
+
+    with st.container(border=True):
+        if app_mode == "Translator Mode":
+            st.markdown(f"### Segment {seg_id}")
+            col_en, col_ar = st.columns(2)
+            with col_en:
+                st.info(eng_txt)
+                if item.get("glossary_notes"):
+                    st.caption(f"💡 **Glossary Matched:** {item.get('glossary_notes')}")
+            with col_ar:
+                sugg_trans = item.get("arabic_translation", "")
+                default_val = item.get("user_arabic", sugg_trans)
+                final_text = st.text_area("Final text", value=default_val, height=120, key=f"edit_{i}", label_visibility="collapsed")
+                if final_text != item.get("user_arabic"):
+                    item["user_arabic"] = final_text
+                    state_modified = True
+        else:
+            color = "🟢" if status_val == "perfect" else ("🟡" if status_val == "minor_edits" else "🔴")
+            st.markdown(f"### Segment {seg_id} | Status: {color} {status_val.upper()}")
+            col_en, col_ar = st.columns(2)
+            with col_en:
+                st.info(eng_txt)
+            with col_ar:
+                st.markdown(generate_html_diff(orig_ar, sugg_ar), unsafe_allow_html=True)
+                with st.expander("💡 View AI Reasoning & Glossary Audit"):
+                    st.markdown(item.get("reasoning", item.get("glossary_notes", "No reasoning provided.")))
+
+                default_val = item.get("user_arabic", sugg_ar)
+                final_text = st.text_area("Final Output", value=default_val, height=120, key=f"edit_ar_{i}", label_visibility="collapsed")
+                if final_text != item.get("user_arabic"):
+                    item["user_arabic"] = final_text
+                    state_modified = True
+
+        chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{i}", value=item.get("is_approved", False))
+        if chk != item.get("is_approved"):
+            item["is_approved"] = chk
+            state_modified = True
+
+        if chk:
+            approved_count += 1
+            if app_mode == "Translator Mode":
+                finalized_data.append(final_text)
+            else:
+                finalized_data.append({
+                    "final_arabic": final_text,
+                    "ar_start": item.get("ar_start"),
+                    "ar_end": item.get("ar_end"),
+                })
+
+if state_modified:
+    save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), st.session_state.get("processed_data"))
+
+# --- SUBMISSION LOGIC ---
+st.divider()
+total_segments = len(st.session_state.get("processed_data", []))
+st.write(f"### **Approved Segments: {approved_count} / {total_segments}**")
+
+if approved_count == total_segments and total_segments > 0:
+    st.success("🎉 All segments approved! Final review before pushing.")
+
+    if "review_unlocked" not in st.session_state:
+        st.session_state["review_unlocked"] = False
+
+    if not st.session_state["review_unlocked"]:
+        st.error("🚨 **CRITICAL STEP:** Please verify the narrative flow before finalizing.")
+        if st.button("👀 I confirm the final text is correct", use_container_width=True):
+            st.session_state["review_unlocked"] = True
+            st.rerun()
+    else:
+        if st.button("🚀 Push to Drive & Conclude Stage", type="primary", use_container_width=True):
+            with st.spinner("Processing Drive updates and concluding workflow..."):
+                if app_mode == "Translator Mode":
+                    ar_compiled = "\n\n".join([str(item) for item in finalized_data])
+                    success = push_to_drive_translator(file_id, ar_compiled)
+                    if success:
+                        r_email = task.get("reviewer", "")
+                        if task.get("translator") == r_email and r_email != "":
+                            new_status = STATUS_REV_COMPLETED
+                        elif r_email != "":
+                            new_status = STATUS_REV_ASSIGNED
+                        else:
+                            new_status = STATUS_TRANS_COMPLETED
+                        update_assignment_status(file_id, new_status, reset_timer=True)
+                else:
+                    if is_bypass_task:
+                        ar_compiled = "\n\n".join([item.get("final_arabic", "") if isinstance(item, dict) else str(item) for item in finalized_data])
+                        success = push_to_drive_translator(file_id, ar_compiled)
+                    else:
+                        success = push_to_drive_reviewer(file_id, finalized_data)
+
+                    if success:
+                        rec_email = task.get("recorder", "")
+                        if rec_email:
+                            new_status = STATUS_REC_ASSIGNED
+                        else:
+                            new_status = STATUS_REC_PENDING
+                        update_assignment_status(file_id, new_status, reset_timer=True)
+
+                if success:
+                    release_document_lock(st.session_state.get("session_row_index"))
+                    st.session_state["active_task"] = None
+                    st.session_state["source_file_id"] = None
+                    st.session_state["processed_data"] = None
+                    st.session_state["review_unlocked"] = False
+                    st.balloons()
+                    st.success("Task stage completed successfully!")
+                    time.sleep(2)
+                    st.rerun()
