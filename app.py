@@ -27,84 +27,27 @@ except ImportError:
 # ==========================================
 # 1. CONFIGURATION, SECRETS & CUSTOM CSS
 # ==========================================
-st.set_page_config(
-    page_title="12-Step AI Suite: Workflow Portal",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+st.set_page_config(page_title="12-Step AI Suite: Workflow Portal", layout="wide", initial_sidebar_state="collapsed")
 
 def apply_custom_css():
-    st.markdown(
-        """
+    st.markdown("""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap');
-        
         html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-        
-        textarea {
-            font-family: 'Cairo', 'Inter', sans-serif !important;
-            font-size: 16px !important;
-            line-height: 1.6 !important;
-            border-radius: 8px !important;
-        }
-        
-        button[kind="primary"] {
-            background-color: #10B981 !important;
-            border-color: #10B981 !important;
-            color: white !important;
-            font-size: 16px !important;
-            font-weight: 600 !important;
-            border-radius: 8px !important;
-            padding: 0.5rem 1rem !important;
-            transition: all 0.2s ease-in-out !important;
-        }
-        button[kind="primary"]:hover {
-            background-color: #059669 !important;
-            border-color: #059669 !important;
-            transform: translateY(-2px);
-        }
-
-        .task-card {
-            background-color: #F8FAFC;
-            border: 1px solid #E2E8F0;
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 15px;
-            border-left: 5px solid #3B82F6;
-        }
-        
-        div[data-testid="stAlert"]:has(p:contains("CRITICAL STEP")) {
-            background-color: #FEF2F2 !important;
-            border: 1px solid #F87171 !important;
-            color: #991B1B !important;
-            border-radius: 8px !important;
-        }
-        
-        .reading-mode {
-            font-family: 'Cairo', sans-serif;
-            font-size: 22px;
-            line-height: 2.2;
-            text-align: justify;
-            direction: rtl;
-            background-color: #ffffff !important;
-            color: #0f172a !important;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-            border: 1px solid #e0e0e0;
-        }
-        
+        textarea { font-family: 'Cairo', 'Inter', sans-serif !important; font-size: 16px !important; line-height: 1.6 !important; border-radius: 8px !important; }
+        button[kind="primary"] { background-color: #10B981 !important; border-color: #10B981 !important; color: white !important; font-size: 16px !important; font-weight: 600 !important; border-radius: 8px !important; padding: 0.5rem 1rem !important; transition: all 0.2s ease-in-out !important; }
+        button[kind="primary"]:hover { background-color: #059669 !important; border-color: #059669 !important; transform: translateY(-2px); }
+        .task-card { background-color: #F8FAFC; border: 1px solid #E2E8F0; padding: 20px; border-radius: 10px; margin-bottom: 15px; border-left: 5px solid #3B82F6; }
+        div[data-testid="stAlert"]:has(p:contains("CRITICAL STEP")) { background-color: #FEF2F2 !important; border: 1px solid #F87171 !important; color: #991B1B !important; border-radius: 8px !important; }
+        .reading-mode { font-family: 'Cairo', sans-serif; font-size: 22px; line-height: 2.2; text-align: justify; direction: rtl; background-color: #ffffff !important; color: #0f172a !important; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border: 1px solid #e0e0e0; }
         .badge-green { background-color: #dcfce7; color: #166534; padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: bold;}
         .badge-yellow { background-color: #fef08a; color: #854d0e; padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: bold;}
         .badge-red { background-color: #fee2e2; color: #991b1b; padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: bold;}
     </style>
-    """,
-        unsafe_allow_html=True,
-    )
+    """, unsafe_allow_html=True)
 
 apply_custom_css()
 
-# Google Sheets Configuration
 GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
 GLOSSARY_RANGE = "'المصطلحات'!A:D"
 GLOSSARY_DATA_RANGE = "'المصطلحات'!C:D"
@@ -115,23 +58,11 @@ ASSIGNMENTS_RANGE = "'Assignments'!A:I"
 LOCK_TIMEOUT_SECONDS = 14400
 ADMIN_REFRESH_COOLDOWN_SECONDS = 600
 
-# Canonical Lifecycle States (9 Stages)
-STATUS_TRANS_ASSIGNED = "Translation Assigned"
-STATUS_TRANS_STARTED = "Translation Started"
-STATUS_TRANS_COMPLETED = "Translation Completed"
-STATUS_REV_ASSIGNED = "Reviewer Assigned"
-STATUS_REV_STARTED = "Reviewer Started"
-STATUS_REV_COMPLETED = "Reviewer Completed"
-STATUS_REC_PENDING = "Pending Audio Recorder"
-STATUS_REC_ASSIGNED = "Recording Assigned"
-STATUS_REC_STARTED = "Recording Started"
-STATUS_REC_COMPLETED = "Recording Completed"
+STATUS_TRANS_ASSIGNED, STATUS_TRANS_STARTED, STATUS_TRANS_COMPLETED = "Translation Assigned", "Translation Started", "Translation Completed"
+STATUS_REV_ASSIGNED, STATUS_REV_STARTED, STATUS_REV_COMPLETED = "Reviewer Assigned", "Reviewer Started", "Reviewer Completed"
+STATUS_REC_PENDING, STATUS_REC_ASSIGNED, STATUS_REC_STARTED, STATUS_REC_COMPLETED = "Pending Audio Recorder", "Recording Assigned", "Recording Started", "Recording Completed"
 
-ALL_STATUSES = [
-    STATUS_TRANS_ASSIGNED, STATUS_TRANS_STARTED, STATUS_TRANS_COMPLETED,
-    STATUS_REV_ASSIGNED, STATUS_REV_STARTED, STATUS_REV_COMPLETED,
-    STATUS_REC_PENDING, STATUS_REC_ASSIGNED, STATUS_REC_STARTED, STATUS_REC_COMPLETED,
-]
+ALL_STATUSES = [STATUS_TRANS_ASSIGNED, STATUS_TRANS_STARTED, STATUS_TRANS_COMPLETED, STATUS_REV_ASSIGNED, STATUS_REV_STARTED, STATUS_REV_COMPLETED, STATUS_REC_PENDING, STATUS_REC_ASSIGNED, STATUS_REC_STARTED, STATUS_REC_COMPLETED]
 
 BATCH_SIZE = 6
 MAX_RETRIES_PER_MODEL = 3
@@ -142,17 +73,11 @@ RETRYABLE_KEYWORDS = ("503", "500", "high demand", "429", "timeout", "Quota")
 # ==========================================
 # 2. GOOGLE SERVICES & AUTHENTICATION
 # ==========================================
-# تم إزالة Cache لحماية الذاكرة ومنع انهيار malloc
 def get_google_services():
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
         credentials = service_account.Credentials.from_service_account_info(
-            creds_dict,
-            scopes=[
-                "https://www.googleapis.com/auth/documents",
-                "https://www.googleapis.com/auth/drive",
-                "https://www.googleapis.com/auth/spreadsheets",
-            ],
+            creds_dict, scopes=["https://www.googleapis.com/auth/documents", "https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/spreadsheets"]
         )
         return (
             build("docs", "v1", credentials=credentials, cache_discovery=False),
@@ -161,7 +86,7 @@ def get_google_services():
         )
     except Exception as e:
         st.error(f"Google Auth Error: {e}")
-        return None, None, None
+        st.stop()
 
 docs_service, drive_service, sheets_service = get_google_services()
 
@@ -176,8 +101,9 @@ def fetch_volunteers():
                     email, name, role, status = r[0].strip().lower(), r[1], r[2].lower(), r[3]
                     volunteers[email] = {"name": name, "role": role, "status": status}
         return volunteers
-    except Exception:
-        return {}
+    except Exception as e:
+        st.error(f"⚠️ خطأ مؤقت في الاتصال بقاعدة بيانات المتطوعين. يرجى الانتظار وتحديث الصفحة.\nالتفاصيل: {e}")
+        st.stop()
 
 def overwrite_sheet_data(range_name, data_matrix):
     sheets_service.spreadsheets().values().clear(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=range_name).execute()
@@ -193,50 +119,28 @@ def fetch_assignments():
             for idx, r in enumerate(rows[1:]):
                 r.extend([""] * (9 - len(r)))
                 assignments.append({
-                    "row_index": idx + 2,
-                    "doc_id": r[0].strip(),
-                    "doc_name": r[1],
-                    "translator": r[2].lower().strip(),
-                    "reviewer": r[3].lower().strip(),
-                    "recorder": r[4].lower().strip(),
-                    "status": r[5],
-                    "sla_track": r[6] if r[6] else "15",
-                    "audio_link": r[7],
-                    "stage_start_date": r[8] if r[8] else datetime.now().isoformat(),
+                    "row_index": idx + 2, "doc_id": r[0].strip(), "doc_name": r[1],
+                    "translator": r[2].lower().strip(), "reviewer": r[3].lower().strip(), "recorder": r[4].lower().strip(),
+                    "status": r[5], "sla_track": r[6] if r[6] else "15", "audio_link": r[7], "stage_start_date": r[8] if r[8] else datetime.now().isoformat()
                 })
         return assignments
-    except Exception:
-        return []
+    except Exception as e:
+        st.error(f"⚠️ خطأ مؤقت في الاتصال بقاعدة بيانات المهام. يرجى الانتظار وتحديث الصفحة.\nالتفاصيل: {e}")
+        st.stop()
 
 def assign_task_to_sheet(doc_id, doc_name, t_email, r_email, rec_email, status, sla_track):
     try:
         assignments = fetch_assignments()
         task = next((row for row in assignments if row.get("doc_id") == doc_id), None)
-        
-        start_date = datetime.now().isoformat()
-        audio_link = ""
+        start_date, audio_link = datetime.now().isoformat(), ""
         
         if task:
-            row_idx = task.get("row_index")
-            audio_link = task.get("audio_link", "")
-            start_date = task.get("stage_start_date", start_date)
-            
+            row_idx, audio_link, start_date = task.get("row_index"), task.get("audio_link", ""), task.get("stage_start_date", start_date)
             body = {"values": [[doc_id, doc_name, t_email, r_email, rec_email, status, sla_track, audio_link, start_date]]}
-            sheets_service.spreadsheets().values().update(
-                spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
-                range=f"'Assignments'!A{row_idx}:I{row_idx}", 
-                valueInputOption="USER_ENTERED", 
-                body=body
-            ).execute()
+            sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Assignments'!A{row_idx}:I{row_idx}", valueInputOption="USER_ENTERED", body=body).execute()
         else:
             body = {"values": [[doc_id, doc_name, t_email, r_email, rec_email, status, sla_track, audio_link, start_date]]}
-            sheets_service.spreadsheets().values().append(
-                spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
-                range="'Assignments'!A:I", 
-                valueInputOption="USER_ENTERED", 
-                insertDataOption="INSERT_ROWS", 
-                body=body
-            ).execute()
+            sheets_service.spreadsheets().values().append(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range="'Assignments'!A:I", valueInputOption="USER_ENTERED", insertDataOption="INSERT_ROWS", body=body).execute()
         return True
     except Exception as e:
         st.error(f"Google Sheets API Error (Assign): {str(e)}")
@@ -248,47 +152,26 @@ def update_assignment_status(doc_id, new_status, reset_timer=False):
         for task in assignments:
             if task.get("doc_id") == doc_id:
                 row_idx = task.get('row_index')
-                sheets_service.spreadsheets().values().update(
-                    spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
-                    range=f"'Assignments'!F{row_idx}", 
-                    valueInputOption="USER_ENTERED", 
-                    body={"values": [[new_status]]}
-                ).execute()
-                
+                sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Assignments'!F{row_idx}", valueInputOption="USER_ENTERED", body={"values": [[new_status]]}).execute()
                 if reset_timer:
-                    sheets_service.spreadsheets().values().update(
-                        spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
-                        range=f"'Assignments'!I{row_idx}", 
-                        valueInputOption="USER_ENTERED", 
-                        body={"values": [[datetime.now().isoformat()]]}
-                    ).execute()
+                    sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Assignments'!I{row_idx}", valueInputOption="USER_ENTERED", body={"values": [[datetime.now().isoformat()]]}).execute()
                 break
-    except Exception as e:
-        st.error(f"Status Update Error: {str(e)}")
+    except Exception as e: st.error(f"Status Update Error: {str(e)}")
 
 def update_assignment_audio_link(doc_id, link):
     try:
         assignments = fetch_assignments()
         for task in assignments:
             if task.get("doc_id") == doc_id:
-                sheets_service.spreadsheets().values().update(
-                    spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
-                    range=f"'Assignments'!H{task.get('row_index')}", 
-                    valueInputOption="USER_ENTERED", 
-                    body={"values": [[link]]}
-                ).execute()
+                sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Assignments'!H{task.get('row_index')}", valueInputOption="USER_ENTERED", body={"values": [[link]]}).execute()
                 break
-    except Exception as e:
-        st.error(f"Audio Link Update Error: {str(e)}")
+    except Exception as e: st.error(f"Audio Link Update Error: {str(e)}")
 
 def calculate_sla_status(status, sla_track, start_date_str):
-    try:
-        start_dt = datetime.fromisoformat(start_date_str) if start_date_str else datetime.now()
-    except:
-        start_dt = datetime.now()
+    try: start_dt = datetime.fromisoformat(start_date_str) if start_date_str else datetime.now()
+    except: start_dt = datetime.now()
 
     status = status or ""
-    
     if status in [STATUS_TRANS_COMPLETED, STATUS_REV_COMPLETED, STATUS_REC_COMPLETED]:
         return "-", 0, "<span class='badge-green'>✅ Stage Completed</span>"
 
@@ -311,8 +194,7 @@ def calculate_sla_status(status, sla_track, start_date_str):
 
     return due_date.strftime("%d %b %Y"), remaining, badge
 
-
-# --- LOGIN SCREEN ---
+# --- LOGIN SCREEN (SECURE OIDC / NATIVE) ---
 def login_screen():
     if st.session_state.get("authenticated"): return True
 
@@ -321,21 +203,34 @@ def login_screen():
         st.title("🤝 12-Step AI Suite")
         st.caption("Volunteer Translation, Review & Recording Portal")
         with st.container(border=True):
-            with st.form("login_form"):
-                email = st.text_input("Enter your registered email address:").strip().lower()
-                if st.form_submit_button("Access Portal", type="primary", width="stretch"):
-                    volunteers = fetch_volunteers()
-                    if email in volunteers:
-                        user_data = volunteers[email]
-                        if user_data.get("status", "").lower() != "active":
-                            st.error("Account suspended. Please contact the coordinator.")
-                        else:
-                            st.session_state.update({"authenticated": True, "user_email": email, "user_role": user_data.get("role"), "user_name": user_data.get("name")})
-                            role = user_data.get("role")
-                            st.session_state["app_mode"] = "God Mode" if role == "admin" else f"{role.capitalize()} Mode"
-                            st.rerun()
+            try:
+                # Streamlit Native Auth (Google OIDC)
+                if not st.experimental_user.is_logged_in:
+                    st.info("🔒 يرجى تسجيل الدخول بحساب Google المعتمد في الخدمة.")
+                    if st.button("تسجيل الدخول (Google Login)", type="primary", width="stretch"):
+                        st.login()
+                    st.stop()
+
+                email = st.experimental_user.email.strip().lower()
+                volunteers = fetch_volunteers()
+                
+                if email in volunteers:
+                    user_data = volunteers[email]
+                    if user_data.get("status", "").lower() != "active":
+                        st.error("حسابك موقوف مؤقتاً. يرجى مراجعة المنسق.")
+                        if st.button("تسجيل الخروج"): st.logout()
                     else:
-                        st.error("Email not recognized in the system.")
+                        st.session_state.update({"authenticated": True, "user_email": email, "user_role": user_data.get("role"), "user_name": user_data.get("name")})
+                        role = user_data.get("role")
+                        st.session_state["app_mode"] = "God Mode" if role == "admin" else f"{role.capitalize()} Mode"
+                        st.rerun()
+                else:
+                    st.error(f"الإيميل '{email}' غير مسجل في قاعدة المتطوعين.")
+                    if st.button("تسجيل الخروج"): st.logout()
+
+            except AttributeError:
+                st.error("⚠️ إصدار Streamlit لديك قديم. يرجى التحديث إلى النسخة 1.38 أو أحدث لدعم نظام الأمان الجديد.")
+                st.stop()
     return False
 
 if not login_screen(): st.stop()
@@ -353,8 +248,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
     col1, col2 = st.columns([5, 1])
     col1.title("⚡ Central Command: God Mode")
     if col2.button("🚪 Logout", type="primary"):
-        st.session_state.clear()
-        st.rerun()
+        st.logout()
 
     tab_dash, tab_dispatch, tab_heatmap, tab_vols, tab_glos, tab_bcast, tab_prep = st.tabs([
         "🎛 Edition Dashboard", "📩 Dispatcher", "🔥 Glossary Heatmap", "👥 Volunteers", "📖 Glossary", "📢 Broadcast", "🤖 Auto-Prep Bot"
@@ -366,32 +260,26 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
         v_name = vols.get(email_key, {}).get("name")
         return f"{v_name} ({email_key})" if v_name else email_key
 
-# ---------------------------------------------------------
-    # TAB 1: EDITION DASHBOARD (Unified Tracker & Assignment)
-    # ---------------------------------------------------------
     with tab_dash:
         col_head, col_ref = st.columns([4, 1])
         with col_head:
             st.subheader("🎛️ Unified Edition Dashboard")
             st.caption("اختر العدد لسحب المقالات من درايف ومطابقتها مع المهام الموزعة والمهل الزمنية.")
-            
         with col_ref:
             curr_time = time.time()
             time_since_refresh = curr_time - st.session_state["admin_last_refresh"]
             if st.button("🔄 Refresh Data", type="primary", width="stretch"):
                 if time_since_refresh < ADMIN_REFRESH_COOLDOWN_SECONDS:
-                    mins_left = int((ADMIN_REFRESH_COOLDOWN_SECONDS - time_since_refresh) // 60)
-                    secs_left = int((ADMIN_REFRESH_COOLDOWN_SECONDS - time_since_refresh) % 60)
-                    st.warning(f"Cooldown active. Please wait {mins_left}m {secs_left}s.")
+                    mins_left, secs_left = int((ADMIN_REFRESH_COOLDOWN_SECONDS - time_since_refresh) // 60), int((ADMIN_REFRESH_COOLDOWN_SECONDS - time_since_refresh) % 60)
+                    st.warning(f"Cooldown active. Wait {mins_left}m {secs_left}s.")
                 else:
                     st.session_state["admin_last_refresh"] = curr_time
-                    st.cache_data.clear() # Force fetch fresh data
+                    st.cache_data.clear() 
                     st.rerun()
 
         try:
             folder_res = drive_service.files().list(q="mimeType='application/vnd.google-apps.folder' and trashed=false", fields="files(id, name)").execute()
             all_folders = folder_res.get("files", [])
-            # ... (باقي الكود يستمر كما هو) ...
             year_folders = [f for f in all_folders if "Edition" in f["name"] or "202" in f["name"]]
 
             if year_folders:
@@ -411,10 +299,8 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                     if col_scan.button("🔄 Load Edition Workspace", type="primary", width="stretch"):
                         st.session_state["active_edition_id"] = month_options[sel_month]
                         st.session_state["active_edition_name"] = sel_month
-                else:
-                    st.warning("No month subfolders found inside the selected year.")
-            else:
-                st.warning("No Year folders found matching 'Edition' or '202*'.")
+                else: st.warning("No month subfolders found inside the selected year.")
+            else: st.warning("No Year folders found matching 'Edition' or '202*'.")
 
             st.divider()
 
@@ -422,7 +308,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                 doc_query = f"'{st.session_state['active_edition_id']}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false"
                 doc_res = drive_service.files().list(q=doc_query, fields="files(id, name)").execute()
                 docs_in_drive = doc_res.get("files", [])
-                
                 assignments = fetch_assignments()
                 assgn_map = {a.get("doc_id"): a for a in assignments}
                 
@@ -436,12 +321,8 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                     
                     st.markdown(f"### 📊 Edition Metrics: `{st.session_state['active_edition_name']}`")
                     m1, m2, m3, m4, m5, m6 = st.columns(6)
-                    m1.metric("Total Docs", c_total)
-                    m2.metric("⚪ Unassigned", c_unassigned)
-                    m3.metric("🟠 Translating", c_translating)
-                    m4.metric("🔵 Reviewing", c_reviewing)
-                    m5.metric("🎙️ Recording", c_recording)
-                    m6.metric("🟢 Finalized", c_done)
+                    m1.metric("Total Docs", c_total); m2.metric("⚪ Unassigned", c_unassigned); m3.metric("🟠 Translating", c_translating)
+                    m4.metric("🔵 Reviewing", c_reviewing); m5.metric("🎙️ Recording", c_recording); m6.metric("🟢 Finalized", c_done)
                     
                     st.divider()
                     st.markdown("### 📋 Task Delegation & Tracking")
@@ -451,8 +332,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                     rec_options = ["[Optional] Assign Later"] + [e for e, d in vols.items() if d.get("role") in ["recorder", "admin"] and d.get("status", "").lower() == "active"]
 
                     for doc in docs_in_drive:
-                        doc_id = doc.get("id")
-                        doc_name = doc.get("name")
+                        doc_id, doc_name = doc.get("id"), doc.get("name")
                         task = assgn_map.get(doc_id)
                         
                         with st.container(border=True):
@@ -467,81 +347,62 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                                 with c_info:
                                     st.markdown(f"📄 **[{doc_name}](https://docs.google.com/document/d/{doc_id}/edit)**")
                                     st.caption(f"**T:** {t_lbl} | **R:** {r_lbl} | **Rec:** {rec_lbl}")
-                                    if task.get("audio_link"):
-                                        st.markdown(f"🎧 [Listen in Telegram / Drive]({task.get('audio_link')})")
+                                    if task.get("audio_link"): st.markdown(f"🎧 [Listen in Telegram / Drive]({task.get('audio_link')})")
                                 with c_badge:
-                                    st.markdown(f"`{cur_st}`")
-                                    st.markdown(badge, unsafe_allow_html=True)
-                                    st.caption(f"Due: {due_date}")
+                                    st.markdown(f"`{cur_st}`"); st.markdown(badge, unsafe_allow_html=True); st.caption(f"Due: {due_date}")
                                 with c_manage:
                                     with st.popover("⚙️ Update", width="stretch"):
                                         new_s = st.selectbox("Stage:", ALL_STATUSES, index=ALL_STATUSES.index(cur_st) if cur_st in ALL_STATUSES else 0, key=f"s_{doc_id}")
-                                        new_rec = st.selectbox("Recorder:", rec_options, format_func=format_vol_label, key=f"rec_{doc_id}")
+                                        
+                                        # FIX 3: Preserve Recorder Index
+                                        cur_rec = task.get("recorder")
+                                        rec_idx = rec_options.index(cur_rec) if cur_rec in rec_options else 0
+                                        new_rec = st.selectbox("Recorder:", rec_options, index=rec_idx, format_func=format_vol_label, key=f"rec_{doc_id}")
+                                        
                                         if st.button("Save", key=f"b_up_{doc_id}", type="primary", width="stretch"):
                                             final_rec = "" if new_rec == rec_options[0] else new_rec
                                             reset_clock = (new_s != cur_st and "Completed" in cur_st) or (new_s != cur_st and "Started" in new_s)
-                                            
                                             with st.spinner("Updating assignment..."):
-                                                if new_s != cur_st: 
-                                                    update_assignment_status(doc_id, new_s, reset_timer=reset_clock)
-                                                if final_rec != task.get("recorder"): 
-                                                    assign_task_to_sheet(doc_id, doc_name, task.get("translator"), task.get("reviewer"), final_rec, new_s, task.get("sla_track"))
+                                                if new_s != cur_st: update_assignment_status(doc_id, new_s, reset_timer=reset_clock)
+                                                if final_rec != task.get("recorder"): assign_task_to_sheet(doc_id, doc_name, task.get("translator"), task.get("reviewer"), final_rec, new_s, task.get("sla_track"))
                                                 st.rerun()
                             else: 
                                 cn, ct, cr, crec, csla, cb = st.columns([2.5, 1.5, 1.5, 1.5, 1, 1])
-                                with cn:
-                                    st.markdown(f"📄 **[{doc_name}](https://docs.google.com/document/d/{doc_id}/edit)**")
-                                    st.caption("⚪ *Unassigned*")
-                                with ct:
-                                    t_sel = st.selectbox("Translator", t_options, format_func=format_vol_label, key=f"t_{doc_id}", label_visibility="collapsed")
-                                with cr:
-                                    r_sel = st.selectbox("Reviewer", r_options, format_func=format_vol_label, key=f"r_{doc_id}", label_visibility="collapsed")
-                                with crec:
-                                    rec_sel = st.selectbox("Recorder", rec_options, format_func=format_vol_label, key=f"rec_{doc_id}", label_visibility="collapsed")
-                                with csla:
-                                    sla_sel = st.selectbox("SLA", ["15 Days", "20 Days"], key=f"sla_{doc_id}", label_visibility="collapsed")
+                                with cn: st.markdown(f"📄 **[{doc_name}](https://docs.google.com/document/d/{doc_id}/edit)**"); st.caption("⚪ *Unassigned*")
+                                with ct: t_sel = st.selectbox("Translator", t_options, format_func=format_vol_label, key=f"t_{doc_id}", label_visibility="collapsed")
+                                with cr: r_sel = st.selectbox("Reviewer", r_options, format_func=format_vol_label, key=f"r_{doc_id}", label_visibility="collapsed")
+                                with crec: rec_sel = st.selectbox("Recorder", rec_options, format_func=format_vol_label, key=f"rec_{doc_id}", label_visibility="collapsed")
+                                with csla: sla_sel = st.selectbox("SLA", ["15 Days", "20 Days"], key=f"sla_{doc_id}", label_visibility="collapsed")
                                 with cb:
                                     if st.button("🚀 Assign", key=f"btn_{doc_id}", type="primary", width="stretch"):
-                                        if r_sel == r_options[0]:
-                                            st.error("Reviewer mandatory!")
+                                        if r_sel == r_options[0]: st.error("Reviewer mandatory!")
                                         else:
                                             final_t = "" if t_sel == t_options[0] else t_sel
                                             final_rec = "" if rec_sel == rec_options[0] else rec_sel
                                             sla_val = "15 Days" if sla_sel == "15 Days" else "20 Days"
                                             init_status = STATUS_REV_ASSIGNED if not final_t else STATUS_TRANS_ASSIGNED
-                                            
                                             with st.spinner("Assigning task..."):
-                                                success = assign_task_to_sheet(doc_id, doc_name, final_t, r_sel, final_rec, init_status, sla_val)
-                                                if success:
-                                                    st.success("Assigned Successfully!")
-                                                    time.sleep(1)
-                                                    st.rerun()
-                else:
-                    st.info("No documents found in this folder.")
-        except Exception as e:
-            st.error(f"Error loading edition workspace: {e}")
+                                                if assign_task_to_sheet(doc_id, doc_name, final_t, r_sel, final_rec, init_status, sla_val):
+                                                    st.success("Assigned Successfully!"); time.sleep(1); st.rerun()
+                else: st.info("No documents found in this folder.")
+        except Exception as e: st.error(f"Error loading edition workspace: {e}")
 
     # ---------------------------------------------------------
-    # TAB 2: ASSIGNMENT DISPATCHER (Onboarding Emails)
+    # TABS 2, 3, 4, 5, 6, 7 (Dispatcher, Heatmap, etc.)
     # ---------------------------------------------------------
     with tab_dispatch:
         st.subheader("📩 Assignment Dispatcher")
         st.caption("تجميع مهام العدد الحالي الموزعة وإرسال إيميلات تكليف رسمية للمتطوعين.")
-        
-        if "active_edition_id" not in st.session_state:
-            st.warning("يرجى تحميل مجلد العدد أولاً من تبويب 'Edition Dashboard'.")
+        if "active_edition_id" not in st.session_state: st.warning("يرجى تحميل مجلد العدد أولاً من تبويب 'Edition Dashboard'.")
         else:
             assignments = fetch_assignments()
-            
             try:
                 doc_query = f"'{st.session_state['active_edition_id']}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false"
                 doc_res = drive_service.files().list(q=doc_query, fields="files(id)").execute()
                 edition_doc_ids = [d["id"] for d in doc_res.get("files", [])]
-                
                 edition_tasks = [t for t in assignments if t["doc_id"] in edition_doc_ids]
                 
-                if not edition_tasks:
-                    st.info("لا توجد مهام معينة في هذا العدد حتى الآن.")
+                if not edition_tasks: st.info("لا توجد مهام معينة في هذا العدد حتى الآن.")
                 else:
                     st.success(f"تم العثور على {len(edition_tasks)} مهمة موزعة في هذا العدد.")
                     if st.button("🚀 Dispatch Official Assignment Emails", type="primary"):
@@ -552,127 +413,49 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                                 if not primary_user: continue
                                 if primary_user not in user_tasks: user_tasks[primary_user] = []
                                 user_tasks[primary_user].append(task)
-                            
                             admin_email = st.secrets.get("SMTP_EMAIL", "arabicessaytranslation@gmail.com")
-                            
                             for assignee_email, tasks in user_tasks.items():
                                 assignee_name = vols.get(assignee_email, {}).get("name", "زميلنا العزيز")
                                 cc_list = {admin_email}
-                                
                                 rows_html = ""
                                 for t in tasks:
                                     if t.get("reviewer") and t.get("reviewer") != assignee_email: cc_list.add(t["reviewer"])
                                     if t.get("recorder") and t.get("recorder") != assignee_email: cc_list.add(t["recorder"])
-                                    
                                     due_date, _, _ = calculate_sla_status(t.get("status"), t.get("sla_track"), t.get("stage_start_date"))
-                                    r_name = vols.get(t.get("reviewer"), {}).get("name", t.get("reviewer"))
-                                    rec_name = vols.get(t.get("recorder"), {}).get("name", "غير محدد")
-                                    
-                                    rows_html += f"""
-                                    <tr style='border-bottom: 1px solid #ddd;'>
-                                        <td style='padding: 8px;'><b>{t.get("doc_name")}</b></td>
-                                        <td style='padding: 8px; color: #b91c1c;'>{due_date}</td>
-                                        <td style='padding: 8px;'>{r_name}</td>
-                                        <td style='padding: 8px;'>{rec_name}</td>
-                                    </tr>
-                                    """
-                                
+                                    rows_html += f"<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>{t.get('doc_name')}</b></td><td style='padding: 8px; color: #b91c1c;'>{due_date}</td><td style='padding: 8px;'>{vols.get(t.get('reviewer'), {}).get('name', t.get('reviewer'))}</td><td style='padding: 8px;'>{vols.get(t.get('recorder'), {}).get('name', 'غير محدد')}</td></tr>"
                                 cc_list.discard(assignee_email)
-                                
-                                html_body = f"""
-                                <html dir="rtl">
-                                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                                    <h2>مرحباً {assignee_name}،</h2>
-                                    <p>شكراً لخدمتك ووقتك الثمين في نقل رسالة التعافي. تم تكليفك بمهام جديدة للعدد الحالي.</p>
-                                    
-                                    <h3>📍 للبدء في العمل:</h3>
-                                    <ol>
-                                        <li>ادخل إلى منصة العمل: <a href="https://12step-suite.streamlit.app">بوابة الترجمة الذكية</a></li>
-                                        <li>في شاشة الدخول، اكتب إيميلك هذا: <b>{assignee_email}</b> كاسم مستخدم.</li>
-                                    </ol>
-                                    
-                                    <h3>📋 قائمة المهام المطلوبة منك:</h3>
-                                    <table style="width: 100%; border-collapse: collapse; text-align: right;">
-                                        <tr style="background-color: #f3f4f6;">
-                                            <th style="padding: 8px;">المقال</th>
-                                            <th style="padding: 8px;">موعد التسليم</th>
-                                            <th style="padding: 8px;">المدقق</th>
-                                            <th style="padding: 8px;">المسجل</th>
-                                        </tr>
-                                        {rows_html}
-                                    </table>
-                                    
-                                    <p style="margin-top: 20px;">
-                                    <b>💡 ملاحظة تقنية:</b> المنصة مزودة بمدقق ذكاء اصطناعي سيقوم بمطابقة ترجمتك مع <a href="https://docs.google.com/spreadsheets/d/{GLOSSARY_SPREADSHEET_ID}/edit">القاموس المعتمد للزمالة</a> تلقائياً.
-                                    </p>
-                                    
-                                    <p>إذا واجهت أي مشكلة تقنية، يرجى الرد على هذا الإيميل (Reply All).<br>متمنين لك خدمة ممتعة ومثمرة!</p>
-                                </body>
-                                </html>
-                                """
-                                
+                                html_body = f"""<html dir="rtl"><body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;"><h2>مرحباً {assignee_name}،</h2><p>تم تكليفك بمهام جديدة للعدد الحالي.</p><h3>📍 للبدء:</h3><ol><li>ادخل للمنصة: <a href="https://12step-suite.streamlit.app">بوابة الترجمة</a></li><li>استخدم زر Google Login للتسجيل بإيميلك.</li></ol><h3>📋 المهام:</h3><table style="width: 100%; border-collapse: collapse; text-align: right;"><tr style="background-color: #f3f4f6;"><th style="padding: 8px;">المقال</th><th style="padding: 8px;">التسليم</th><th style="padding: 8px;">المدقق</th><th style="padding: 8px;">المسجل</th></tr>{rows_html}</table><p>ملاحظة: المنصة مزودة بمدقق يطابق <a href="https://docs.google.com/spreadsheets/d/{GLOSSARY_SPREADSHEET_ID}/edit">القاموس</a> تلقائياً.</p></body></html>"""
                                 try:
-                                    msg = EmailMessage()
-                                    msg.set_content("Please enable HTML to view this message.")
-                                    msg.add_alternative(html_body, subtype='html')
-                                    msg["Subject"] = f"🔔 مهام جديدة بانتظارك - مشروع الترجمة (العدد {st.session_state['active_edition_name']})"
-                                    msg["From"] = admin_email
-                                    msg["To"] = assignee_email
-                                    msg["Cc"] = ", ".join(cc_list)
-
+                                    msg = EmailMessage(); msg.set_content("Please enable HTML."); msg.add_alternative(html_body, subtype='html')
+                                    msg["Subject"] = f"🔔 مهام جديدة بانتظارك (العدد {st.session_state['active_edition_name']})"; msg["From"] = admin_email; msg["To"] = assignee_email; msg["Cc"] = ", ".join(cc_list)
                                     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                                        server.login(admin_email, st.secrets["SMTP_PASSWORD"])
-                                        server.send_message(msg)
-                                except Exception as e:
-                                    st.error(f"فشل إرسال الإيميل لـ {assignee_email}: {e}")
-                                    
-                            st.balloons()
-                            st.success("تم إرسال إشعارات التكليف بنجاح لجميع الفريق!")
-                            
-            except Exception as e:
-                st.error(f"Error fetching edition tasks: {e}")
+                                        server.login(admin_email, st.secrets["SMTP_PASSWORD"]); server.send_message(msg)
+                                except Exception as e: st.error(f"فشل إرسال الإيميل لـ {assignee_email}: {e}")
+                            st.balloons(); st.success("تم إرسال إشعارات التكليف بنجاح لجميع الفريق!")
+            except Exception as e: st.error(f"Error fetching edition tasks: {e}")
 
-    # ---------------------------------------------------------
-    # TAB 3: GLOSSARY HEATMAP
-    # ---------------------------------------------------------
     with tab_heatmap:
         st.subheader("🔥 Glossary Heatmap")
-        st.caption("تحليل آلي للأخطاء الشائعة في ترجمة المصطلحات بناءً على تصحيحات الذكاء الاصطناعي.")
         if st.button("🔄 Generate Heatmap", type="primary"):
             with st.spinner("مسح الجلسات وتحليل الملاحظات..."):
                 try:
                     res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
-                    rows = res.get("values", [])
-                    term_counts = {}
-                    
+                    rows, term_counts = res.get("values", []), {}
                     for r in rows[1:]:
                         if len(r) > 3 and r[3]:
                             try:
-                                data = json.loads(r[3])
-                                for item in data:
-                                    reasoning = item.get("reasoning", "")
-                                    notes = item.get("glossary_notes", "")
-                                    combined = reasoning + " " + notes
-                                    
-                                    matches = re.findall(r'([A-Za-z\s]+)\s*(?:->|:|-)\s*([\u0600-\u06FF\s]+)', combined)
+                                for item in json.loads(r[3]):
+                                    matches = re.findall(r'([A-Za-z\s]+)\s*(?:->|:|-)\s*([\u0600-\u06FF\s]+)', item.get("reasoning", "") + " " + item.get("glossary_notes", ""))
                                     for eng, ar in matches:
                                         eng_clean = eng.strip().lower()
-                                        if len(eng_clean) > 2 and eng_clean != "none":
-                                            term_counts[eng_clean] = term_counts.get(eng_clean, 0) + 1
+                                        if len(eng_clean) > 2 and eng_clean != "none": term_counts[eng_clean] = term_counts.get(eng_clean, 0) + 1
                             except Exception: pass
-                    
-                    if not term_counts:
-                        st.info("لا توجد أخطاء مسجلة أو بيانات كافية للتحليل حالياً.")
+                    if not term_counts: st.info("لا توجد بيانات كافية للتحليل حالياً.")
                     else:
-                        sorted_terms = sorted(term_counts.items(), key=lambda x: x[1], reverse=True)[:15]
-                        df_heat = pd.DataFrame(sorted_terms, columns=["المصطلح الإنجليزي", "تكرار التصحيح آلياً"])
+                        df_heat = pd.DataFrame(sorted(term_counts.items(), key=lambda x: x[1], reverse=True)[:15], columns=["المصطلح الإنجليزي", "تكرار التصحيح آلياً"])
                         st.dataframe(df_heat, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Heatmap Error: {e}")
+                except Exception as e: st.error(f"Heatmap Error: {e}")
 
-    # ---------------------------------------------------------
-    # TABS 4, 5, 6, 7: STANDARD ADMIN TABS
-    # ---------------------------------------------------------
     with tab_vols:
         st.subheader("Manage Volunteer Access")
         try:
@@ -680,13 +463,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
             vol_data = res.get("values", [])
             if not vol_data: vol_data = [["Email", "Name", "Role", "Status"]]
             df_vol = pd.DataFrame(vol_data[1:], columns=vol_data[0])
-            edited_vol = st.data_editor(
-                df_vol, num_rows="dynamic", use_container_width=True,
-                column_config={
-                    "Role": st.column_config.SelectboxColumn("Role", options=["translator", "reviewer", "recorder", "admin"], required=True),
-                    "Status": st.column_config.SelectboxColumn("Status", options=["Active", "Suspended"], required=True),
-                },
-            )
+            edited_vol = st.data_editor(df_vol, num_rows="dynamic", use_container_width=True, column_config={"Role": st.column_config.SelectboxColumn("Role", options=["translator", "reviewer", "recorder", "admin"], required=True), "Status": st.column_config.SelectboxColumn("Status", options=["Active", "Suspended"], required=True)})
             if st.button("💾 Save Volunteers", type="primary"):
                 overwrite_sheet_data(VOLUNTEERS_RANGE, [edited_vol.columns.tolist()] + edited_vol.fillna("").values.tolist())
                 st.success("Volunteers database updated!")
@@ -701,8 +478,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
             rows_to_display = glos_data[1:] if (glos_data and len(glos_data[0]) == 4 and not glos_data[0][0].isdigit()) else glos_data
             cleaned_rows = [list(row) + [""] * (4 - len(row)) for row in rows_to_display]
             if not cleaned_rows: cleaned_rows = [["1", "General", "", ""]]
-            df_glos = pd.DataFrame(cleaned_rows, columns=headers)
-            edited_glos = st.data_editor(df_glos, num_rows="dynamic", use_container_width=True)
+            edited_glos = st.data_editor(pd.DataFrame(cleaned_rows, columns=headers), num_rows="dynamic", use_container_width=True)
             if st.button("💾 Sync Glossary to AI", type="primary"):
                 overwrite_sheet_data(GLOSSARY_RANGE, [edited_glos.columns.tolist()] + edited_glos.fillna("").values.tolist())
                 st.success("Glossary synced successfully!"); st.cache_data.clear()
@@ -718,15 +494,10 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                 if active_emails:
                     with st.spinner("Dispatching emails via secure SMTP..."):
                         try:
-                            msg = EmailMessage()
-                            msg.set_content(f"12-Step Translation Project Update:\n\n{broadcast_message}")
-                            msg["Subject"] = f"[12-Step Admin] {broadcast_subject}"
-                            msg["From"] = st.secrets.get("SMTP_EMAIL", "admin@localhost")
-                            msg["To"] = st.secrets.get("SMTP_EMAIL", "admin@localhost")
-                            msg["Bcc"] = ", ".join(active_emails)
+                            msg = EmailMessage(); msg.set_content(f"12-Step Translation Project Update:\n\n{broadcast_message}")
+                            msg["Subject"] = f"[12-Step Admin] {broadcast_subject}"; msg["From"] = st.secrets.get("SMTP_EMAIL", "admin@localhost"); msg["To"] = st.secrets.get("SMTP_EMAIL", "admin@localhost"); msg["Bcc"] = ", ".join(active_emails)
                             with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                                server.login(st.secrets["SMTP_EMAIL"], st.secrets["SMTP_PASSWORD"])
-                                server.send_message(msg)
+                                server.login(st.secrets["SMTP_EMAIL"], st.secrets["SMTP_PASSWORD"]); server.send_message(msg)
                             st.success(f"Broadcast sent successfully to {len(active_emails)} volunteers!"); st.balloons()
                         except Exception as e: st.error(f"Failed to send email. Check SMTP secrets. Error: {e}")
                 else: st.warning("No active volunteers found to email.")
@@ -734,35 +505,30 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
 
     with tab_prep:
         st.subheader("🤖 Automated Edition Prep-Bot")
-        st.info("أدخل رابط المجلد الخام، وسيقوم البوت بإنشاء المجلدات، تحويل الملفات إلى Google Docs، وتنبيه تيليجرام.")
         with st.container(border=True):
             c_link, c_year, c_month = st.columns([3, 1, 1])
             raw_link = c_link.text_input("🔗 Raw Folder Link (Google Drive):", placeholder="https://drive.google.com/drive/folders/...")
             current_year = datetime.now().year
-            years = [str(y) for y in range(current_year - 1, current_year + 3)]
-            sel_year = c_year.selectbox("Year:", years, index=1)
-            months = ["1 - January", "2 - February", "3 - March", "4 - April", "5 - May", "6 - June", "7 - July", "8 - August", "9 - September", "10 - October", "11 - November", "12 - December"]
-            sel_month = c_month.selectbox("Month:", months)
+            sel_year = c_year.selectbox("Year:", [str(y) for y in range(current_year - 1, current_year + 3)], index=1)
+            sel_month = c_month.selectbox("Month:", ["1 - January", "2 - February", "3 - March", "4 - April", "5 - May", "6 - June", "7 - July", "8 - August", "9 - September", "10 - October", "11 - November", "12 - December"])
 
             if st.button("🚀 Trigger Preparation Bot", type="primary", width="stretch"):
                 if not raw_link: st.error("❌ الرجاء إدخال رابط المجلد أولاً.")
                 else:
                     with st.spinner("⏳ Sending command to Backend Bot..."):
                         try:
-                            month_num = int(sel_month.split(" - ")[0])
-                            payload = {"url": raw_link, "year": sel_year, "monthNum": month_num, "chatId": st.secrets.get("TELEGRAM_ADMIN_CHAT_ID", "")}
                             gas_webhook_url = st.secrets.get("GAS_WEBAPP_URL", "")
-                            if gas_webhook_url:
+                            gas_token = st.secrets.get("GAS_SECRET_TOKEN", "") # FIX 6: Secret Token
+                            if gas_webhook_url and gas_token:
+                                payload = {"url": raw_link, "year": sel_year, "monthNum": int(sel_month.split(" - ")[0]), "chatId": st.secrets.get("TELEGRAM_ADMIN_CHAT_ID", ""), "token": gas_token}
                                 response = requests.post(gas_webhook_url, json=payload, timeout=15)
                                 if response.status_code == 200:
                                     res_data = response.json()
-                                    if res_data.get("status") == "success":
-                                        st.success(f"✅ {res_data.get('message')}"); st.balloons()
+                                    if res_data.get("status") == "success": st.success(f"✅ {res_data.get('message')}"); st.balloons()
                                     else: st.error(f"⚠️ خطأ من البوت: {res_data.get('message')}")
                                 else: st.error("فشل الاتصال بالخادم السحابي للبوت.")
-                            else: st.error("⚠️ يرجى التأكد من إضافة 'GAS_WEBAPP_URL' في إعدادات secrets.")
+                            else: st.error("⚠️ يرجى التأكد من إضافة 'GAS_WEBAPP_URL' و 'GAS_SECRET_TOKEN' في إعدادات secrets.")
                         except Exception as e: st.error(f"حدث خطأ أثناء التواصل مع البوت: {e}")
-
     st.stop()
 
 
@@ -773,8 +539,7 @@ if not st.session_state.get("source_file_id"):
     col_t, col_l = st.columns([5, 1])
     col_t.title("⚙ 12-Step AI Suite")
     if col_l.button("🚪 Logout", width="stretch"):
-        st.session_state.clear()
-        st.rerun()
+        st.logout()
 
     st.subheader(f"👋 Welcome, {st.session_state.get('user_name')} | Role: {st.session_state.get('user_role', '').capitalize()}")
     st.markdown("---")
@@ -883,6 +648,7 @@ def get_fallback_models():
         except Exception: pass
     return ["gemini-2.5-flash", "gemini-1.5-flash"]
 
+# FIX 4: Save Drafts to Google Drive to bypass 50K Sheets limit
 def manage_document_lock(file_id: str, user_email: str):
     try:
         res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
@@ -894,11 +660,21 @@ def manage_document_lock(file_id: str, user_email: str):
             if len(row) > 0 and row[0] == file_id:
                 locked_by = row[1] if len(row) > 1 else ""
                 ts = float(row[2]) if len(row) > 2 and row[2] else 0
-                saved_json = row[3] if len(row) > 3 else ""
+                has_draft = row[3] if len(row) > 3 else ""
+                
                 if locked_by and locked_by != user_email and (current_time - ts) < LOCK_TIMEOUT_SECONDS:
                     return {"status": "blocked", "locked_by": locked_by, "row_index": index + 1}
-                if locked_by == user_email and saved_json:
-                    try: return {"status": "recovered", "data": json.loads(saved_json), "row_index": index + 1}
+                
+                if locked_by == user_email and has_draft == "DRIVE_DRAFT":
+                    try: 
+                        # Fetch JSON from Drive
+                        draft_name = f".draft_{file_id}_{user_email}.json"
+                        res_drive = drive_service.files().list(q=f"name='{draft_name}' and trashed=false", fields="files(id)").execute()
+                        files = res_drive.get('files', [])
+                        if files:
+                            request = drive_service.files().get_media(fileId=files[0]['id'])
+                            file_bytes = request.execute()
+                            return {"status": "recovered", "data": json.loads(file_bytes.decode('utf-8')), "row_index": index + 1}
                     except Exception: pass
                 return {"status": "clear", "row_index": index + 1}
         return {"status": "clear", "row_index": target_row_index}
@@ -911,13 +687,28 @@ def acquire_document_lock(file_id: str, user_email: str, row_index: int):
         sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}", valueInputOption="USER_ENTERED", body=body).execute()
     except Exception: pass
 
-def save_draft_to_sheet(file_id, user_email, row_index, processed_data):
-    if not row_index: return
+def save_draft_to_drive(file_id, user_email, row_index, processed_data):
+    if not row_index: return False
     try:
-        json_data = json.dumps(processed_data, ensure_ascii=False)
-        body = {"values": [[file_id, user_email, str(time.time()), json_data]]}
+        draft_name = f".draft_{file_id}_{user_email}.json"
+        json_data = json.dumps(processed_data, ensure_ascii=False).encode('utf-8')
+        media = MediaIoBaseUpload(io.BytesIO(json_data), mimetype='application/json', resumable=True)
+        
+        # Write to Drive
+        res_drive = drive_service.files().list(q=f"name='{draft_name}' and trashed=false", fields="files(id)").execute()
+        files = res_drive.get('files', [])
+        if files:
+            drive_service.files().update(fileId=files[0]['id'], media_body=media).execute()
+        else:
+            parent_id = st.session_state.get("active_task_parent_folder", "")
+            file_metadata = {'name': draft_name, 'parents': [parent_id] if parent_id else []}
+            drive_service.files().create(body=file_metadata, media_body=media).execute()
+
+        # Update Sessions Sheet Flag
+        body = {"values": [[file_id, user_email, str(time.time()), "DRIVE_DRAFT"]]}
         sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}", valueInputOption="USER_ENTERED", body=body).execute()
-    except Exception: pass
+        return True
+    except Exception: return False
 
 def release_document_lock(row_index):
     if not row_index: return
@@ -1121,6 +912,9 @@ def extract_text_from_drive(file_id, is_retry=False):
             try: document = docs_svc.documents().get(documentId=file_id, includeTabsContent=True).execute()
             except Exception: document = docs_svc.documents().get(documentId=file_id).execute()
 
+            # FIX 5: Save Revision ID
+            st.session_state["doc_revision_id"] = document.get("revisionId")
+
             all_paras = []
             def sweep_doc_obj(doc_obj):
                 temp_paras = []
@@ -1146,43 +940,27 @@ def extract_text_from_drive(file_id, is_retry=False):
         return None
 
 def upload_audio_to_drive(uploaded_file, doc_name, parent_folder_id):
-    """Uploads audio file to Google Drive via Google Apps Script Backend."""
     try:
-        file_size_mb = uploaded_file.size / (1024 * 1024)
-        if file_size_mb > 25.0:
-            st.error(f"⚠️ حجم الملف ({file_size_mb:.1f} MB) كبير جداً. يرجى ضغط الملف.")
-            return None
-
         gas_webhook_url = st.secrets.get("GAS_WEBAPP_URL")
-        if not gas_webhook_url:
-            st.error("⚠ يرجى التأكد من إضافة 'GAS_WEBAPP_URL' في إعدادات secrets.")
+        gas_token = st.secrets.get("GAS_SECRET_TOKEN") # FIX 6: Secret Token
+        if not gas_webhook_url or not gas_token:
+            st.error("⚠ يرجى التأكد من إعداد 'GAS_WEBAPP_URL' و 'GAS_SECRET_TOKEN'")
             return None
 
         clean_title = re.sub(r'[\\/*?:"<>|]', '', doc_name).strip()
         file_ext = uploaded_file.name.split('.')[-1] if hasattr(uploaded_file, 'name') and uploaded_file.name else 'wav'
         mime_type = uploaded_file.type if hasattr(uploaded_file, 'type') and uploaded_file.type else 'audio/wav'
-        file_name = f"{clean_title}.{file_ext}"
-
-        file_bytes = uploaded_file.getvalue()
-        file_b64 = base64.b64encode(file_bytes).decode('utf-8')
-
+        
         payload = {
-            "action": "upload_audio",
-            "parent_folder_id": parent_folder_id,
-            "file_name": file_name,
-            "mime_type": mime_type,
-            "file_base64": file_b64
+            "action": "upload_audio", "parent_folder_id": parent_folder_id,
+            "file_name": f"{clean_title}.{file_ext}", "mime_type": mime_type,
+            "file_base64": base64.b64encode(uploaded_file.getvalue()).decode('utf-8'),
+            "token": gas_token
         }
 
-        response = requests.post(gas_webhook_url, json=payload, timeout=50)
-        res_data = response.json()
-
-        if res_data.get("status") == "success":
-            return res_data.get("webViewLink")
-        else:
-            st.error(f"GAS Upload Error: {res_data.get('message')}")
-            return None
-
+        res_data = requests.post(gas_webhook_url, json=payload, timeout=50).json()
+        if res_data.get("status") == "success": return res_data.get("webViewLink")
+        else: st.error(f"GAS Upload Error: {res_data.get('message')}"); return None
     except requests.exceptions.Timeout:
         st.error("⏳ انتهى وقت الاتصال بالخادم. يرجى إعادة المحاولة.")
         return None
@@ -1210,7 +988,8 @@ def push_to_drive_translator(document_id, final_arabic_text):
         st.error(f"Failed to push to Drive. Error: {e}")
         return False
 
-def push_to_drive_reviewer(document_id, approved_segments):
+# FIX 5: Use requiredRevisionId to prevent silent overwrites
+def push_to_drive_reviewer(document_id, approved_segments, revision_id):
     docs_svc, _, _ = get_google_services()
     try:
         valid_segments = [seg for seg in approved_segments if seg.get("ar_start") is not None and seg.get("ar_end") is not None]
@@ -1219,10 +998,17 @@ def push_to_drive_reviewer(document_id, approved_segments):
         for seg in valid_segments:
             requests.append({"deleteContentRange": {"range": {"startIndex": seg["ar_start"], "endIndex": seg["ar_end"] - 1}}})
             requests.append({"insertText": {"location": {"index": seg["ar_start"]}, "text": seg.get("final_arabic", "")}})
-        if requests: docs_svc.documents().batchUpdate(documentId=document_id, body={"requests": requests}).execute()
+        
+        body = {"requests": requests}
+        if revision_id: body["writeControl"] = {"requiredRevisionId": revision_id}
+        
+        if requests: docs_svc.documents().batchUpdate(documentId=document_id, body=body).execute()
         return True
     except Exception as e:
-        st.error(f"Failed to push to Drive. Error: {e}")
+        if "requiredRevisionId" in str(e) or "400" in str(e):
+            st.error("❌ تعذر الحفظ: تم تعديل المستند الأصلي من قبل شخص آخر أثناء عملك. يرجى تحديث الصفحة والمحاولة مجدداً.")
+        else:
+            st.error(f"Failed to push to Drive. Error: {e}")
         return False
 
 # ==========================================
@@ -1243,9 +1029,7 @@ if app_mode == "Recorder Mode":
     col_h1, col_h2 = st.columns([5, 1])
     col_h1.markdown(f"## 🎙️ Recording Studio: `{task.get('doc_name')}`")
     if col_h2.button("⬅️ Back to Inbox", width="stretch"):
-        st.session_state["active_task"] = None
-        st.session_state["source_file_id"] = None
-        st.rerun()
+        st.session_state["active_task"] = None; st.session_state["source_file_id"] = None; st.rerun()
 
     st.markdown(f"[🔗 Open Original Document in Google Docs](https://docs.google.com/document/d/{file_id}/edit)")
     
@@ -1257,36 +1041,23 @@ if app_mode == "Recorder Mode":
         
         st.divider()
         st.subheader("📤 Submit Audio Recording")
-        
-        st.info("💡 يمكنك التسجيل مباشرة من المتصفح، أو إرفاق ملف جاهز إذا قمت بتسجيله مسبقاً.")
-        
         col_rec, col_up = st.columns(2)
-        with col_rec:
-            recorded_audio = st.audio_input("🎙️ Record directly from your mic:")
-        with col_up:
-            uploaded_audio = st.file_uploader("📂 Or upload a ready audio file (MP3/WAV):", type=["mp3", "wav", "m4a"])
+        with col_rec: recorded_audio = st.audio_input("🎙️ Record directly from your mic:")
+        with col_up: uploaded_audio = st.file_uploader("📂 Or upload a ready audio file (MP3/WAV):", type=["mp3", "wav", "m4a"])
         
         final_audio_file = recorded_audio if recorded_audio else uploaded_audio
-        
         if final_audio_file is not None:
-            st.success("✅ Audio Ready for submission!")
-            st.audio(final_audio_file)
+            st.success("✅ Audio Ready for submission!"); st.audio(final_audio_file)
             if st.button("🚀 Upload & Complete Task", type="primary", width="stretch"):
-                with st.spinner("Uploading to Google Drive... Please do not close the window."):
+                with st.spinner("Uploading to Google Drive..."):
                     parent_folder = st.session_state.get("active_task_parent_folder", "")
                     file_link = upload_audio_to_drive(final_audio_file, task.get("doc_name"), parent_folder)
-                    
                     if file_link:
                         update_assignment_audio_link(file_id, file_link)
                         update_assignment_status(file_id, STATUS_REC_COMPLETED, reset_timer=False)
-                        st.balloons()
-                        st.success("Audio uploaded successfully! Task closed.")
-                        time.sleep(2)
-                        st.session_state["active_task"] = None
-                        st.session_state["source_file_id"] = None
-                        st.rerun()
-    else:
-        st.error("Could not fetch document content.")
+                        st.balloons(); st.success("Audio uploaded successfully! Task closed.")
+                        time.sleep(2); st.session_state["active_task"] = None; st.session_state["source_file_id"] = None; st.rerun()
+    else: st.error("Could not fetch document content.")
     st.stop()
 
 # ---------------------------------------------------------
@@ -1300,39 +1071,23 @@ col_h1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
 with col_h2:
     c_btn, c_glos = st.columns([1, 1])
     if c_btn.button("⬅️ Back to Inbox", width="stretch"):
-        st.session_state["active_task"] = None
-        st.session_state["source_file_id"] = None
-        st.session_state["processed_data"] = None
-        st.rerun()
+        st.session_state["active_task"] = None; st.session_state["source_file_id"] = None; st.session_state["processed_data"] = None; st.rerun()
     with c_glos:
-        if glossary_term_count > 0:
-            st.success(f"📖 Glossary: {glossary_term_count} terms")
-        else:
-            st.warning("⚠️ Glossary: Not Loaded")
-
-peer_t = task.get('translator')
-peer_r = task.get('reviewer')
-if app_mode == "Translator Mode":
-    st.caption(f"**Assigned Reviewer for this document:** {peer_r if peer_r else 'TBD'}")
-elif app_mode == "Reviewer Mode":
-    st.caption(f"**Original Translator:** {peer_t if peer_t else '🤖 Automated AI Bypass Draft'}")
+        if glossary_term_count > 0: st.success(f"📖 Glossary: {glossary_term_count} terms")
+        else: st.warning("⚠️ Glossary: Not Loaded")
 
 st.markdown(f"[🔗 Open Document in Google Docs](https://docs.google.com/document/d/{file_id}/edit)")
-
 is_bypass_task = task.get("translator") == ""
 
 if not st.session_state.get("processed_data"):
     lock = manage_document_lock(file_id, st.session_state.get("user_email"))
     if lock["status"] == "blocked":
-        st.error(f"🛑 **Document In Use:** This document is currently locked by `{lock.get('locked_by', 'another user')}`.")
-        st.stop()
+        st.error(f"🛑 **Document In Use:** This document is currently locked by `{lock.get('locked_by', 'another user')}`."); st.stop()
     elif lock["status"] == "recovered":
-        st.session_state["session_row_index"] = lock["row_index"]
-        st.session_state["processed_data"] = lock["data"]
+        st.session_state["session_row_index"] = lock["row_index"]; st.session_state["processed_data"] = lock["data"]
         st.success("♻️ **Session Recovered.** Restored your previous work.")
     elif lock["status"] == "clear":
         st.session_state["session_row_index"] = lock["row_index"]
-
         acquire_document_lock(file_id, st.session_state.get("user_email"), lock["row_index"])
         paras = extract_text_from_drive(file_id)
 
@@ -1340,7 +1095,6 @@ if not st.session_state.get("processed_data"):
             processed_results = []
             progress_bar = st.progress(0)
 
-            # --- CASE A: TRANSLATOR MODE ---
             if app_mode == "Translator Mode":
                 st.info("Extracting document content and translating via AI Batching...")
                 batches = [paras[i : i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
@@ -1349,63 +1103,39 @@ if not st.session_state.get("processed_data"):
                     ai_results = translate_batch_with_fallback(batch_payload, glossary_data)
 
                     for ai_res in ai_results:
-                        ai_id = int(ai_res.get("id", 1))
-                        array_index = ai_id - 1
+                        ai_id = int(ai_res.get("id", 1)); array_index = ai_id - 1
                         eng_text = batch[array_index].get("text", "") if 0 <= array_index < len(batch) else batch[0].get("text", "")
-
                         processed_results.append({
-                            "id": ai_id + (idx * BATCH_SIZE),
-                            "english": eng_text,
-                            "arabic_translation": ai_res.get("arabic_translation", ""),
-                            "glossary_notes": ai_res.get("glossary_notes", ""),
-                            "user_arabic": ai_res.get("arabic_translation", ""),
-                            "is_approved": False,
+                            "id": ai_id + (idx * BATCH_SIZE), "english": eng_text, "arabic_translation": ai_res.get("arabic_translation", ""),
+                            "glossary_notes": ai_res.get("glossary_notes", ""), "user_arabic": ai_res.get("arabic_translation", ""), "is_approved": False,
                         })
                     progress_bar.progress((idx + 1) / len(batches))
-
-            # --- CASE B: REVIEWER MODE ---
             else:
                 has_arabic = any(re.search(r"[\u0600-\u06FF]", p.get("text", "")) for p in paras)
 
                 if not has_arabic or is_bypass_task:
                     st.info("🤖 **AI Bypass Mode:** Generating initial draft and analyzing narrative flow for your review...")
                     batches = [paras[i : i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
-
                     draft_segments = []
                     for idx, batch in enumerate(batches):
                         batch_payload = [{"id": j + 1, "english": p.get("text", "")} for j, p in enumerate(batch)]
                         ai_trans = translate_batch_with_fallback(batch_payload, glossary_data)
                         for ai_t in ai_trans:
-                            ai_id = int(ai_t.get("id", 1))
-                            array_index = ai_id - 1
+                            ai_id = int(ai_t.get("id", 1)); array_index = ai_id - 1
                             eng_text = batch[array_index].get("text", "") if 0 <= array_index < len(batch) else batch[0].get("text", "")
-                            draft_segments.append({
-                                "id": ai_id + (idx * BATCH_SIZE),
-                                "english": eng_text,
-                                "arabic": ai_t.get("arabic_translation", ""),
-                                "glossary_notes": ai_t.get("glossary_notes", ""),
-                            })
+                            draft_segments.append({"id": ai_id + (idx * BATCH_SIZE), "english": eng_text, "arabic": ai_t.get("arabic_translation", ""), "glossary_notes": ai_t.get("glossary_notes", "")})
 
                     rev_batches = [draft_segments[i : i + BATCH_SIZE] for i in range(0, len(draft_segments), BATCH_SIZE)]
                     for idx, r_batch in enumerate(rev_batches):
                         ai_revs = review_batch_with_fallback(r_batch, glossary_data)
                         for ai_r, d_seg in zip(ai_revs, r_batch):
-                            suggested = ai_r.get("suggested_arabic", d_seg.get("arabic", ""))
-                            status_val = ai_r.get("status", "minor_edits")
+                            suggested, status_val = ai_r.get("suggested_arabic", d_seg.get("arabic", "")), ai_r.get("status", "minor_edits")
                             processed_results.append({
-                                "id": d_seg.get("id"),
-                                "status": status_val,
-                                "english": d_seg.get("english", ""),
-                                "original_arabic": d_seg.get("arabic", ""),
-                                "suggested_arabic": suggested,
-                                "reasoning": (ai_r.get("reasoning", "") + (f" | Glossary: {d_seg.get('glossary_notes')}" if d_seg.get("glossary_notes") else "")),
-                                "ar_start": None,
-                                "ar_end": None,
-                                "user_arabic": suggested,
-                                "is_approved": (status_val == "perfect"),
+                                "id": d_seg.get("id"), "status": status_val, "english": d_seg.get("english", ""), "original_arabic": d_seg.get("arabic", ""),
+                                "suggested_arabic": suggested, "reasoning": (ai_r.get("reasoning", "") + (f" | Glossary: {d_seg.get('glossary_notes')}" if d_seg.get("glossary_notes") else "")),
+                                "ar_start": None, "ar_end": None, "user_arabic": suggested, "is_approved": (status_val == "perfect"),
                             })
                         progress_bar.progress((idx + 1) / len(rev_batches))
-
                 else:
                     st.info("Extracting segments and comparing human translation against AI audit...")
                     segments = smart_align(paras)
@@ -1415,55 +1145,24 @@ if not st.session_state.get("processed_data"):
                     for idx, batch in enumerate(batches):
                         ai_results = review_batch_with_fallback(batch, glossary_data)
                         for ai_res, o_seg in zip(ai_results, batch):
-                            suggested = ai_res.get("suggested_arabic", o_seg.get("arabic", ""))
-                            status_val = ai_res.get("status", "minor_edits")
+                            suggested, status_val = ai_res.get("suggested_arabic", o_seg.get("arabic", "")), ai_res.get("status", "minor_edits")
                             processed_results.append({
-                                "id": o_seg.get("id"),
-                                "status": status_val,
-                                "english": o_seg.get("english", ""),
-                                "original_arabic": o_seg.get("arabic", ""),
-                                "suggested_arabic": suggested,
-                                "reasoning": ai_res.get("reasoning", ""),
-                                "ar_start": o_seg.get("ar_start"),
-                                "ar_end": o_seg.get("ar_end"),
-                                "user_arabic": suggested,
-                                "is_approved": (status_val == "perfect"),
+                                "id": o_seg.get("id"), "status": status_val, "english": o_seg.get("english", ""), "original_arabic": o_seg.get("arabic", ""),
+                                "suggested_arabic": suggested, "reasoning": ai_res.get("reasoning", ""), "ar_start": o_seg.get("ar_start"), "ar_end": o_seg.get("ar_end"),
+                                "user_arabic": suggested, "is_approved": (status_val == "perfect"),
                             })
                         progress_bar.progress((idx + 1) / len(batches))
 
                     for item in segments:
                         if item.get("english") == "[MISSING ENGLISH SOURCE]":
-                            processed_results.append({
-                                "id": item.get("id"),
-                                "status": "major_rewrite",
-                                "english": "[MISSING]",
-                                "original_arabic": item.get("arabic", ""),
-                                "suggested_arabic": item.get("arabic", ""),
-                                "reasoning": "⚠️ Orphaned Arabic block.",
-                                "ar_start": item.get("ar_start"),
-                                "ar_end": item.get("ar_end"),
-                                "user_arabic": item.get("arabic"),
-                                "is_approved": False,
-                            })
+                            processed_results.append({"id": item.get("id"), "status": "major_rewrite", "english": "[MISSING]", "original_arabic": item.get("arabic", ""), "suggested_arabic": item.get("arabic", ""), "reasoning": "⚠️ Orphaned Arabic block.", "ar_start": item.get("ar_start"), "ar_end": item.get("ar_end"), "user_arabic": item.get("arabic"), "is_approved": False })
                         elif item.get("arabic") == "[MISSING ARABIC TRANSLATION]":
                             trans_res = translate_with_ai(item.get("english", ""), glossary_data)
                             t_arabic = trans_res.get("arabic_translation", "")
-                            processed_results.append({
-                                "id": item.get("id"),
-                                "status": "major_rewrite",
-                                "english": item.get("english", ""),
-                                "original_arabic": "[MISSING]",
-                                "suggested_arabic": t_arabic,
-                                "reasoning": "⚠️ Auto-translated orphaned English block.",
-                                "ar_start": None,
-                                "ar_end": None,
-                                "user_arabic": t_arabic,
-                                "is_approved": False,
-                            })
-
+                            processed_results.append({"id": item.get("id"), "status": "major_rewrite", "english": item.get("english", ""), "original_arabic": "[MISSING]", "suggested_arabic": t_arabic, "reasoning": "⚠️ Auto-translated orphaned English block.", "ar_start": None, "ar_end": None, "user_arabic": t_arabic, "is_approved": False })
                     processed_results.sort(key=lambda x: x.get("id", 0))
 
-            save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), processed_results)
+            save_draft_to_drive(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), processed_results)
             st.session_state["processed_data"] = processed_results
             st.rerun()
 
@@ -1472,11 +1171,8 @@ approved_count, finalized_data, state_modified = 0, [], False
 st.divider()
 
 for i, item in enumerate(st.session_state.get("processed_data", [])):
-    seg_id = item.get("id", i + 1)
-    status_val = item.get("status", "minor_edits")
-    eng_txt = item.get("english", "")
-    orig_ar = item.get("original_arabic", "")
-    sugg_ar = item.get("suggested_arabic", item.get("arabic_translation", ""))
+    seg_id, status_val = item.get("id", i + 1), item.get("status", "minor_edits")
+    eng_txt, orig_ar, sugg_ar = item.get("english", ""), item.get("original_arabic", ""), item.get("suggested_arabic", item.get("arabic_translation", ""))
 
     with st.container(border=True):
         if app_mode == "Translator Mode":
@@ -1484,50 +1180,33 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
             col_en, col_ar = st.columns(2)
             with col_en:
                 st.info(eng_txt)
-                if item.get("glossary_notes"):
-                    st.caption(f"💡 **Glossary Matched:** {item.get('glossary_notes')}")
+                if item.get("glossary_notes"): st.caption(f"💡 **Glossary Matched:** {item.get('glossary_notes')}")
             with col_ar:
-                sugg_trans = item.get("arabic_translation", "")
-                default_val = item.get("user_arabic", sugg_trans)
+                default_val = item.get("user_arabic", item.get("arabic_translation", ""))
                 final_text = st.text_area("Final text", value=default_val, height=120, key=f"edit_{i}", label_visibility="collapsed")
-                if final_text != item.get("user_arabic"):
-                    item["user_arabic"] = final_text
-                    state_modified = True
+                if final_text != item.get("user_arabic"): item["user_arabic"] = final_text; state_modified = True
         else:
             color = "🟢" if status_val == "perfect" else ("🟡" if status_val == "minor_edits" else "🔴")
             st.markdown(f"### Segment {seg_id} | Status: {color} {status_val.upper()}")
             col_en, col_ar = st.columns(2)
-            with col_en:
-                st.info(eng_txt)
+            with col_en: st.info(eng_txt)
             with col_ar:
                 st.markdown(generate_html_diff(orig_ar, sugg_ar), unsafe_allow_html=True)
-                with st.expander("💡 View AI Reasoning & Glossary Audit"):
-                    st.markdown(item.get("reasoning", item.get("glossary_notes", "No reasoning provided.")))
-
+                with st.expander("💡 View AI Reasoning & Glossary Audit"): st.markdown(item.get("reasoning", item.get("glossary_notes", "No reasoning provided.")))
                 default_val = item.get("user_arabic", sugg_ar)
                 final_text = st.text_area("Final Output", value=default_val, height=120, key=f"edit_ar_{i}", label_visibility="collapsed")
-                if final_text != item.get("user_arabic"):
-                    item["user_arabic"] = final_text
-                    state_modified = True
+                if final_text != item.get("user_arabic"): item["user_arabic"] = final_text; state_modified = True
 
         chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{i}", value=item.get("is_approved", False))
-        if chk != item.get("is_approved"):
-            item["is_approved"] = chk
-            state_modified = True
-
+        if chk != item.get("is_approved"): item["is_approved"] = chk; state_modified = True
         if chk:
             approved_count += 1
-            if app_mode == "Translator Mode":
-                finalized_data.append(final_text)
-            else:
-                finalized_data.append({
-                    "final_arabic": final_text,
-                    "ar_start": item.get("ar_start"),
-                    "ar_end": item.get("ar_end"),
-                })
+            if app_mode == "Translator Mode": finalized_data.append(final_text)
+            else: finalized_data.append({"final_arabic": final_text, "ar_start": item.get("ar_start"), "ar_end": item.get("ar_end")})
 
 if state_modified:
-    save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), st.session_state.get("processed_data"))
+    if save_draft_to_drive(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), st.session_state.get("processed_data")):
+        st.toast("✅ تم حفظ التعديلات كمسودة", icon="💾")
 
 # --- SUBMISSION LOGIC ---
 st.divider()
@@ -1536,10 +1215,8 @@ st.write(f"### **Approved Segments: {approved_count} / {total_segments}**")
 
 if approved_count == total_segments and total_segments > 0:
     st.success("🎉 All segments approved! Final review before pushing.")
-
-    if "review_unlocked" not in st.session_state:
-        st.session_state["review_unlocked"] = False
-
+    if "review_unlocked" not in st.session_state: st.session_state["review_unlocked"] = False
+    
     if not st.session_state["review_unlocked"]:
         st.error("🚨 **CRITICAL STEP:** Please verify the narrative flow before finalizing.")
         if st.button("👀 I confirm the final text is correct", width="stretch"):
@@ -1553,35 +1230,25 @@ if approved_count == total_segments and total_segments > 0:
                     success = push_to_drive_translator(file_id, ar_compiled)
                     if success:
                         r_email = task.get("reviewer", "")
-                        if task.get("translator") == r_email and r_email != "":
-                            new_status = STATUS_REV_COMPLETED
-                        elif r_email != "":
-                            new_status = STATUS_REV_ASSIGNED
-                        else:
-                            new_status = STATUS_TRANS_COMPLETED
+                        if task.get("translator") == r_email and r_email != "": new_status = STATUS_REV_COMPLETED
+                        elif r_email != "": new_status = STATUS_REV_ASSIGNED
+                        else: new_status = STATUS_TRANS_COMPLETED
                         update_assignment_status(file_id, new_status, reset_timer=True)
                 else:
                     if is_bypass_task:
                         ar_compiled = "\n\n".join([item.get("final_arabic", "") if isinstance(item, dict) else str(item) for item in finalized_data])
                         success = push_to_drive_translator(file_id, ar_compiled)
                     else:
-                        success = push_to_drive_reviewer(file_id, finalized_data)
+                        success = push_to_drive_reviewer(file_id, finalized_data, st.session_state.get("doc_revision_id"))
 
                     if success:
                         rec_email = task.get("recorder", "")
-                        if rec_email:
-                            new_status = STATUS_REC_ASSIGNED
-                        else:
-                            new_status = STATUS_REC_PENDING
+                        new_status = STATUS_REC_ASSIGNED if rec_email else STATUS_REC_PENDING
                         update_assignment_status(file_id, new_status, reset_timer=True)
 
                 if success:
                     release_document_lock(st.session_state.get("session_row_index"))
-                    st.session_state["active_task"] = None
-                    st.session_state["source_file_id"] = None
-                    st.session_state["processed_data"] = None
-                    st.session_state["review_unlocked"] = False
-                    st.balloons()
-                    st.success("Task stage completed successfully!")
-                    time.sleep(2)
-                    st.rerun()
+                    st.session_state["active_task"] = None; st.session_state["source_file_id"] = None
+                    st.session_state["processed_data"] = None; st.session_state["review_unlocked"] = False
+                    st.balloons(); st.success("Task stage completed successfully!")
+                    time.sleep(2); st.rerun()
