@@ -252,8 +252,8 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
         st.session_state.clear()
         st.rerun()
 
-    tab_dash, tab_dispatch, tab_heatmap, tab_vols, tab_glos, tab_bcast, tab_prep = st.tabs([
-        "🎛 Edition Dashboard", "📩 Dispatcher", "🔥 Glossary Heatmap", "👥 Volunteers", "📖 Glossary", "📢 Broadcast", "🤖 Auto-Prep Bot"
+    tab_dash, tab_dispatch, tab_heatmap, tab_vols, tab_glos, tab_bcast, tab_prep, tab_export = st.tabs([
+        "🎛 Edition Dashboard", "📩 Dispatcher", "🔥 Glossary Heatmap", "👥 Volunteers", "📖 Glossary", "📢 Broadcast", "🤖 Auto-Prep Bot", "📤 Export"
     ])
 
     vols = fetch_volunteers()
@@ -356,13 +356,18 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                                     with st.popover("⚙️ Update", width="stretch"):
                                         new_s = st.selectbox("Stage:", ALL_STATUSES, index=ALL_STATUSES.index(cur_st) if cur_st in ALL_STATUSES else 0, key=f"s_{doc_id}")
                                         
-                                        # FIX 3: Preserve Recorder Index
                                         cur_rec = task.get("recorder")
                                         rec_idx = rec_options.index(cur_rec) if cur_rec in rec_options else 0
                                         new_rec = st.selectbox("Recorder:", rec_options, index=rec_idx, format_func=format_vol_label, key=f"rec_{doc_id}")
                                         
                                         if st.button("Save", key=f"b_up_{doc_id}", type="primary", width="stretch"):
                                             final_rec = "" if new_rec == rec_options[0] else new_rec
+                                            
+                                            # --- AUTO ADVANCE LOGIC ---
+                                            if cur_st == STATUS_REC_PENDING and final_rec != "" and new_s == cur_st:
+                                                new_s = STATUS_REC_ASSIGNED
+                                            # --------------------------
+
                                             reset_clock = (new_s != cur_st and "Completed" in cur_st) or (new_s != cur_st and "Started" in new_s)
                                             with st.spinner("Updating assignment..."):
                                                 if new_s != cur_st: update_assignment_status(doc_id, new_s, reset_timer=reset_clock)
@@ -531,6 +536,62 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                                 else: st.error("فشل الاتصال بالخادم السحابي للبوت.")
                             else: st.error("⚠️ يرجى التأكد من إضافة 'GAS_WEBAPP_URL' و 'GAS_SECRET_TOKEN' في إعدادات secrets.")
                         except Exception as e: st.error(f"حدث خطأ أثناء التواصل مع البوت: {e}")
+
+    # ---------------------------------------------------------
+    # TAB 8: EXPORT EDITION (تصدير العدد)
+    # ---------------------------------------------------------
+    with tab_export:
+        st.subheader("📤 تصدير محتويات العدد")
+        st.caption("نسخ أو نقل جميع ملفات العدد الحالي (المستندات والتسجيلات) إلى حافظة خارجية تمتلك صلاحية محرر عليها.")
+        
+        if "active_edition_id" not in st.session_state:
+            st.warning("⚠ يرجى تحميل مجلد العدد أولاً من تبويب 'Edition Dashboard'.")
+        else:
+            st.success(f"📂 الحافظة الحالية النشطة: {st.session_state['active_edition_name']}")
+            
+            with st.container(border=True):
+                target_url = st.text_input("🔗 رابط الحافظة الهدف (Target Folder URL):", placeholder="https://drive.google.com/drive/folders/...")
+                
+                operation_type = st.radio("⚙️ نوع العملية:", ["نسخ الملفات (آمن - يبقي الأصل)", "نقل الملفات (يسحبها من الحافظة الحالية)"])
+                is_move = (operation_type == "نقل الملفات (يسحبها من الحافظة الحالية)")
+                
+                if st.button("🚀 بدء التصدير السحابي", type="primary", width="stretch"):
+                    if not target_url:
+                        st.error("❌ الرجاء إدخال رابط الحافظة الهدف.")
+                    else:
+                        folder_match = re.search(r'[-\w]{25,}', target_url)
+                        if not folder_match:
+                            st.error("❌ رابط الحافظة الهدف غير صالح.")
+                        else:
+                            target_id = folder_match.group(0)
+                            with st.spinner("⏳ جاري التواصل مع الخادم للتصدير... ستصلك رسالة تيليجرام بالتفاصيل."):
+                                try:
+                                    gas_webhook_url = st.secrets.get("GAS_WEBAPP_URL", "")
+                                    gas_token = st.secrets.get("GAS_SECRET_TOKEN", "")
+                                    
+                                    if gas_webhook_url and gas_token:
+                                        payload = {
+                                            "action": "transfer_contents",
+                                            "source_folder_id": st.session_state["active_edition_id"],
+                                            "target_folder_id": target_id,
+                                            "move_files": is_move,
+                                            "chatId": st.secrets.get("TELEGRAM_ADMIN_CHAT_ID", ""),
+                                            "token": gas_token
+                                        }
+                                        response = requests.post(gas_webhook_url, json=payload, timeout=20)
+                                        if response.status_code == 200:
+                                            res_data = response.json()
+                                            if res_data.get("status") == "success":
+                                                st.balloons()
+                                                st.success(f"✅ تمت العملية بنجاح! تم تصدير {res_data.get('count')} ملف. راجع تيليجرام للتفاصيل.")
+                                            else:
+                                                st.error(f"⚠️ خطأ من الخادم: {res_data.get('message')}")
+                                        else:
+                                            st.error("فشل الاتصال بالخادم السحابي.")
+                                    else:
+                                        st.error("⚠️ يرجى التأكد من إضافة 'GAS_WEBAPP_URL' و 'GAS_SECRET_TOKEN' في إعدادات secrets.")
+                                except Exception as e:
+                                    st.error(f"حدث خطأ أثناء التصدير: {e}")
     st.stop()
 
 
@@ -651,7 +712,6 @@ def get_fallback_models():
         except Exception: pass
     return ["gemini-2.5-flash", "gemini-1.5-flash"]
 
-# FIX 4: Save Drafts to Google Drive to bypass 50K Sheets limit
 def manage_document_lock(file_id: str, user_email: str):
     try:
         res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
@@ -670,7 +730,6 @@ def manage_document_lock(file_id: str, user_email: str):
                 
                 if locked_by == user_email and has_draft == "DRIVE_DRAFT":
                     try: 
-                        # Fetch JSON from Drive
                         draft_name = f".draft_{file_id}_{user_email}.json"
                         res_drive = drive_service.files().list(q=f"name='{draft_name}' and trashed=false", fields="files(id)").execute()
                         files = res_drive.get('files', [])
@@ -697,7 +756,6 @@ def save_draft_to_drive(file_id, user_email, row_index, processed_data):
         json_data = json.dumps(processed_data, ensure_ascii=False).encode('utf-8')
         media = MediaIoBaseUpload(io.BytesIO(json_data), mimetype='application/json', resumable=True)
         
-        # Write to Drive
         res_drive = drive_service.files().list(q=f"name='{draft_name}' and trashed=false", fields="files(id)").execute()
         files = res_drive.get('files', [])
         if files:
@@ -707,7 +765,6 @@ def save_draft_to_drive(file_id, user_email, row_index, processed_data):
             file_metadata = {'name': draft_name, 'parents': [parent_id] if parent_id else []}
             drive_service.files().create(body=file_metadata, media_body=media).execute()
 
-        # Update Sessions Sheet Flag
         body = {"values": [[file_id, user_email, str(time.time()), "DRIVE_DRAFT"]]}
         sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}", valueInputOption="USER_ENTERED", body=body).execute()
         return True
@@ -719,21 +776,38 @@ def release_document_lock(row_index):
         sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}", valueInputOption="USER_ENTERED", body={"values": [["", "", "", ""]]}).execute()
     except Exception: pass
 
+# --- تم تحديث جلب القاموس لتكوين Dictionary للتدقيق المباشر ---
 @st.cache_data(ttl=3600)
 def fetch_glossary():
     try:
         res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=GLOSSARY_DATA_RANGE).execute()
         vals = res.get("values", [])
         glos_lines = []
+        glos_dict = {}
         count = 0
         for row in vals:
             if len(row) >= 2 and row[0].strip() and row[1].strip():
                 if row[0].strip().lower() == "english": continue
-                glos_lines.append(f"- {row[0].strip()} -> {row[1].strip()}")
+                en = row[0].strip()
+                ar = row[1].strip()
+                glos_lines.append(f"- {en} -> {ar}")
+                glos_dict[en.lower()] = ar
                 count += 1
-        return "\n".join(glos_lines), count
+        return "\n".join(glos_lines), count, glos_dict
     except Exception:
-        return "", 0
+        return "", 0, {}
+
+# --- دالة التحقق الإلزامي من القاموس (ميزة المرحلة الثانية) ---
+def check_glossary_violations(eng_text, ar_text, glossary_dict):
+    violations = []
+    if not eng_text or not ar_text or not glossary_dict: return violations
+    eng_lower = eng_text.lower()
+    for en_term, ar_term in glossary_dict.items():
+        pattern = r'\b' + re.escape(en_term) + r'\b'
+        if re.search(pattern, eng_lower):
+            if ar_term not in ar_text:
+                violations.append((en_term, ar_term))
+    return violations
 
 def generate_html_diff(original, suggested):
     if not original or original.startswith("[MISSING"): return ("<div dir='rtl' style='text-align: right; color: #0369a1; background-color: #e0f2fe; padding: 10px; border-radius: 5px; font-family: \"Cairo\";'>✨ Initial AI Draft</div>")
@@ -915,7 +989,6 @@ def extract_text_from_drive(file_id, is_retry=False):
             try: document = docs_svc.documents().get(documentId=file_id, includeTabsContent=True).execute()
             except Exception: document = docs_svc.documents().get(documentId=file_id).execute()
 
-            # FIX 5: Save Revision ID
             st.session_state["doc_revision_id"] = document.get("revisionId")
 
             all_paras = []
@@ -945,7 +1018,7 @@ def extract_text_from_drive(file_id, is_retry=False):
 def upload_audio_to_drive(uploaded_file, doc_name, parent_folder_id):
     try:
         gas_webhook_url = st.secrets.get("GAS_WEBAPP_URL")
-        gas_token = st.secrets.get("GAS_SECRET_TOKEN") # FIX 6: Secret Token
+        gas_token = st.secrets.get("GAS_SECRET_TOKEN") 
         if not gas_webhook_url or not gas_token:
             st.error("⚠ يرجى التأكد من إعداد 'GAS_WEBAPP_URL' و 'GAS_SECRET_TOKEN'")
             return None
@@ -991,7 +1064,6 @@ def push_to_drive_translator(document_id, final_arabic_text):
         st.error(f"Failed to push to Drive. Error: {e}")
         return False
 
-# FIX 5: Use requiredRevisionId to prevent silent overwrites
 def push_to_drive_reviewer(document_id, approved_segments, revision_id):
     docs_svc, _, _ = get_google_services()
     try:
@@ -1066,7 +1138,7 @@ if app_mode == "Recorder Mode":
 # ---------------------------------------------------------
 # TRANSLATOR / REVIEWER WORKSPACE
 # ---------------------------------------------------------
-glossary_data, glossary_term_count = fetch_glossary()
+glossary_data, glossary_term_count, glossary_dict = fetch_glossary()
 
 col_h1, col_h2 = st.columns([4, 2])
 col_h1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
@@ -1188,6 +1260,11 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
                 default_val = item.get("user_arabic", item.get("arabic_translation", ""))
                 final_text = st.text_area("Final text", value=default_val, height=120, key=f"edit_{i}", label_visibility="collapsed")
                 if final_text != item.get("user_arabic"): item["user_arabic"] = final_text; state_modified = True
+                
+                # --- الفحص الصارم للقاموس ---
+                violations = check_glossary_violations(eng_txt, final_text, glossary_dict)
+                if violations:
+                    st.error("⚠️ **مخالفة لقاموس الزمالة:** " + " | ".join([f"`{en}` ⟵ `{ar}`" for en, ar in violations]))
         else:
             color = "🟢" if status_val == "perfect" else ("🟡" if status_val == "minor_edits" else "🔴")
             st.markdown(f"### Segment {seg_id} | Status: {color} {status_val.upper()}")
@@ -1199,6 +1276,11 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
                 default_val = item.get("user_arabic", sugg_ar)
                 final_text = st.text_area("Final Output", value=default_val, height=120, key=f"edit_ar_{i}", label_visibility="collapsed")
                 if final_text != item.get("user_arabic"): item["user_arabic"] = final_text; state_modified = True
+
+                # --- الفحص الصارم للقاموس ---
+                violations = check_glossary_violations(eng_txt, final_text, glossary_dict)
+                if violations:
+                    st.error("⚠️ **مخالفة لقاموس الزمالة:** " + " | ".join([f"`{en}` ⟵ `{ar}`" for en, ar in violations]))
 
         chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{i}", value=item.get("is_approved", False))
         if chk != item.get("is_approved"): item["is_approved"] = chk; state_modified = True
