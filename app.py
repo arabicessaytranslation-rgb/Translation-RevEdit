@@ -405,7 +405,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                         # عرض الجدول بوضوح إذا تم توليده
                         if "planned_distribution" in st.session_state and st.session_state["planned_distribution"]:
                             plan_df = pd.DataFrame(st.session_state["planned_distribution"])
-                            # عرض أسماء المتطوعين بدلاً من الإيميلات في الجدول للتوضيح
                             display_df = plan_df.copy()
                             display_df["المترجم المقترح"] = display_df["المترجم المقترح"].apply(lambda x: vols.get(x, {}).get("name", x) if x else "AI Bypass")
                             display_df["المدقق المقترح"] = display_df["المدقق المقترح"].apply(lambda x: vols.get(x, {}).get("name", x))
@@ -1296,7 +1295,7 @@ if not st.session_state.get("processed_data"):
                 else:
                     st.info("Extracting segments and comparing human translation against AI audit...")
                     segments = smart_align(paras)
-                    normal_segs = [s for s in segments if s.get("english"] != "[MISSING ENGLISH SOURCE]" and s.get("arabic"] != "[MISSING ARABIC TRANSLATION]"]
+                    normal_segs = [s for s in segments if s.get("english") != "[MISSING ENGLISH SOURCE]" and s.get("arabic") != "[MISSING ARABIC TRANSLATION]"]
                     batches = [normal_segs[i : i + BATCH_SIZE] for i in range(0, len(normal_segs), BATCH_SIZE)]
 
                     for idx, batch in enumerate(batches):
@@ -1395,7 +1394,7 @@ if approved_count == total_segments and total_segments > 0:
                     success = push_to_drive_translator(file_id, ar_compiled)
                     if success:
                         r_email = task.get("reviewer", "")
-                        if task.get("translator"] == r_email and r_email != "": new_status = STATUS_REV_COMPLETED
+                        if task.get("translator") == r_email and r_email != "": new_status = STATUS_REV_COMPLETED
                         elif r_email != "": new_status = STATUS_REV_ASSIGNED
                         else: new_status = STATUS_TRANS_COMPLETED
                         update_assignment_status(file_id, new_status, reset_timer=True)
