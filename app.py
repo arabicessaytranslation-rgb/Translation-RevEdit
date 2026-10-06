@@ -267,7 +267,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
         st.session_state.clear()
         st.rerun()
 
-    # دمج التبويبات الـ 8 القديمة إلى 4 تبويبات رئيسية منظمة
     tab_dash, tab_tools, tab_team, tab_bcast = st.tabs([
         "📁 إدارة العدد والمهام", "🤖 أدوات السيرفر والنقل", "👥 إدارة الفريق والقاموس", "📢 الإذاعة والتواصل"
     ])
@@ -361,13 +360,11 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                             if not sel_reviewers:
                                 st.error("❌ يجب اختيار مدقق واحد على الأقل.")
                             else:
-                                # جمع معلومات المقالات وعدد كلماتها
                                 articles_info = []
                                 for doc in docs_in_drive:
                                     w_count = get_quick_word_count(doc.get("id"))
                                     articles_info.append({"id": doc.get("id"), "name": doc.get("name"), "words": w_count if isinstance(w_count, int) else 0})
                                 
-                                # ترتيب المقالات تنازلياً حسب الكلمات (Greedy Partitioning)
                                 articles_info.sort(key=lambda x: x["words"], reverse=True)
                                 
                                 st.success("✅ تم حساب الأوزان وترتيب المقالات بنجاح:")
@@ -443,7 +440,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
         except Exception as e: st.error(f"Error loading edition workspace: {e}")
 
         st.divider()
-        # دمج مُرسل المهام (Dispatcher) هنا مباشرة ليكون تحت لوحة العدد
         st.subheader("📩 مرسل إيميلات التكليف المجمعة (Dispatcher)")
         st.caption("تجميع مهام العدد الحالي الموزعة وإرسال إيميلات تكليف رسمية للمتطوعين دفعة واحدة.")
         if "active_edition_id" in st.session_state:
@@ -1243,7 +1239,7 @@ if not st.session_state.get("processed_data"):
                 else:
                     st.info("Extracting segments and comparing human translation against AI audit...")
                     segments = smart_align(paras)
-                    normal_segs = [s for s in segments if s.get("english") != "[MISSING ENGLISH SOURCE]" and s.get("arabic"] != "[MISSING ARABIC TRANSLATION]"]
+                    normal_segs = [s for s in segments if s.get("english") != "[MISSING ENGLISH SOURCE]" and s.get("arabic") != "[MISSING ARABIC TRANSLATION]"]
                     batches = [normal_segs[i : i + BATCH_SIZE] for i in range(0, len(normal_segs), BATCH_SIZE)]
 
                     for idx, batch in enumerate(batches):
@@ -1307,7 +1303,7 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
 
                 violations = check_glossary_violations(eng_txt, final_text, glossary_dict)
                 if violations:
-                    st.error("⚠️ **مخالفة لقاموس الزمالة:** " + " | ".join([f"`{en}` ⟵ `{ar}`" for en, ar in violations]))
+                    st.error("⚠️️ **مخالفة لقاموس الزمالة:** " + " | ".join([f"`{en}` ⟵ `{ar}`" for en, ar in violations]))
 
         chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{i}", value=item.get("is_approved", False))
         if chk != item.get("is_approved"): item["is_approved"] = chk; state_modified = True
