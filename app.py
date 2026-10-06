@@ -346,31 +346,88 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                     
                     st.divider()
 
-                    # --- ⚡ قسم التوزيع العادل التلقائي للمقالات (Auto-Balancer) ---
-                    with st.expander("⚖️ التوزيع العادل التلقائي للمقالات بناءً على عدد الكلمات"):
+                    # --- ⚖️ قسم التوزيع العادل التلقائي المكشوف (Auto-Balancer) ---
+                    with st.expander("⚖️ التوزيع العادل التلقائي للمقالات بناءً على عدد الكلمات", expanded=False):
                         st.caption("أداة ذكية لتوزيع مقالات العدد بالتساوي على المترجمين والمدققين المتاحين لضمان عدالة العبء.")
                         
                         active_translators = [e for e, d in vols.items() if d.get("role") in ["translator", "admin"] and d.get("status", "").lower() == "active"]
                         active_reviewers = [e for e, d in vols.items() if d.get("role") in ["reviewer", "admin"] and d.get("status", "").lower() == "active"]
                         
-                        sel_translators = st.multiselect("اختر المترجمين المشاركين:", active_translators, format_func=format_vol_label)
-                        sel_reviewers = st.multiselect("اختر المدققين المشاركين (إلزامي):", active_reviewers, format_func=format_vol_label)
+                        sel_translators = st.multiselect("اختر المترجمين المشاركين (اختياري - لو ترك فارغاً سيتم الاعتماد على المدققين فقط):", active_translators, format_func=format_vol_label, key="auto_t_list")
+                        sel_reviewers = st.multiselect("اختر المدققين المشاركين (إلزامي):", active_reviewers, format_func=format_vol_label, key="auto_r_list")
                         
-                        if st.button("🚀 حساب واقتراح التوزيع العادل", type="primary"):
+                        if st.button("🚀 توليد جدول التوزيع المقترح", type="primary"):
                             if not sel_reviewers:
-                                st.error("❌ يجب اختيار مدقق واحد على الأقل.")
+                                st.error("❌ يجب اختيار مدقق واحد على الأقل للمتابعة.")
                             else:
                                 articles_info = []
                                 for doc in docs_in_drive:
                                     w_count = get_quick_word_count(doc.get("id"))
                                     articles_info.append({"id": doc.get("id"), "name": doc.get("name"), "words": w_count if isinstance(w_count, int) else 0})
                                 
+                                # ترتيب المقالات تنازلياً حسب الكلمات (Greedy Partitioning Algorithm)
                                 articles_info.sort(key=lambda x: x["words"], reverse=True)
                                 
-                                st.success("✅ تم حساب الأوزان وترتيب المقالات بنجاح:")
-                                preview_df = pd.DataFrame(articles_info)
-                                st.dataframe(preview_df, use_container_width=True)
-                                st.info("💡 سيتم قريباً ربط زر الاعتماد الآلي لتعبئة شيت المهام تلقائياً بالكامل بناءً على هذا التوزيع.")
+                                # توزيع على المدققين
+                                rev_loads = {r: 0 for r in sel_reviewers}
+                                rev_assignments = {r: [] for r in sel_reviewers}
+                                for art in articles_info:
+                                    lightest_rev = min(rev_loads, key=rev_loads.get)
+                                    rev_loads[lightest_rev] += art["words"]
+                                    rev_assignments[lightest_rev].append(art)
+
+                                # توزيع على المترجمين إن وجدوا
+                                trans_assignments = {}
+                                if sel_translators:
+                                    trans_loads = {t: 0 for t in sel_translators}
+                                    trans_assignments = {t: [] for t in sel_translators}
+                                    for art in articles_info:
+                                        lightest_t = min(trans_loads, key=trans_loads.get)
+                                        trans_loads[lightest_t] += art["words"]
+                                        trans_assignments[lightest_t].append(art)
+
+                                # دمج النتائج في جدول مكشوف وواضح
+                                planned_rows = []
+                                for art in articles_info:
+                                    assigned_r = next((r for r, arts in rev_assignments.items() if art in arts), sel_reviewers[0])
+                                    assigned_t = next((t for t, arts in trans_assignments.items() if art in arts), "") if sel_translators else ""
+                                    planned_rows.append({
+                                        "doc_id": art["id"],
+                                        "doc_name": art["name"],
+                                        "عدد الكلمات": art["words"],
+                                        "المترجم المقترح": assigned_t,
+                                        "المدقق المقترح": assigned_r
+                                    })
+                                
+                                st.session_state["planned_distribution"] = planned_rows
+                                st.success("✅ تم توليد خطة التوزيع العادل بنجاح. راجع الجدول أدناه واضغط اعتماد للحفظ في الشيت:")
+
+                        # عرض الجدول بوضوح إذا تم توليده
+                        if "planned_distribution" in st.session_state and st.session_state["planned_distribution"]:
+                            plan_df = pd.DataFrame(st.session_state["planned_distribution"])
+                            # عرض أسماء المتطوعين بدلاً من الإيميلات في الجدول للتوضيح
+                            display_df = plan_df.copy()
+                            display_df["المترجم المقترح"] = display_df["المترجم المقترح"].apply(lambda x: vols.get(x, {}).get("name", x) if x else "AI Bypass")
+                            display_df["المدقق المقترح"] = display_df["المدقق المقترح"].apply(lambda x: vols.get(x, {}).get("name", x))
+                            
+                            st.dataframe(display_df[["doc_name", "عدد الكلمات", "المترجم المقترح", "المدقق المقترح"]], use_container_width=True)
+                            
+                            if st.button("💾 اعتماد وحفظ التوزيع في الشيت رسمياً", type="primary"):
+                                with st.spinner("جاري حفظ التوزيع في جوجل شيت..."):
+                                    success_count = 0
+                                    for row in st.session_state["planned_distribution"]:
+                                        t_email = row["المترجم المقترح"]
+                                        r_email = row["المدقق المقترح"]
+                                        init_status = STATUS_REV_ASSIGNED if not t_email else STATUS_TRANS_ASSIGNED
+                                        if assign_task_to_sheet(row["doc_id"], row["doc_name"], t_email, r_email, "", init_status, "15 Days"):
+                                            success_count += 1
+                                    
+                                    if success_count > 0:
+                                        st.balloons()
+                                        st.success(f"🎉 تم اعتماد وتوزيع {success_count} مقالاً بنجاح في الشيت!")
+                                        time.sleep(1.5)
+                                        del st.session_state["planned_distribution"]
+                                        st.rerun()
 
                     st.divider()
                     st.markdown("### 📋 Task Delegation & Tracking")
@@ -1239,7 +1296,7 @@ if not st.session_state.get("processed_data"):
                 else:
                     st.info("Extracting segments and comparing human translation against AI audit...")
                     segments = smart_align(paras)
-                    normal_segs = [s for s in segments if s.get("english") != "[MISSING ENGLISH SOURCE]" and s.get("arabic") != "[MISSING ARABIC TRANSLATION]"]
+                    normal_segs = [s for s in segments if s.get("english"] != "[MISSING ENGLISH SOURCE]" and s.get("arabic"] != "[MISSING ARABIC TRANSLATION]"]
                     batches = [normal_segs[i : i + BATCH_SIZE] for i in range(0, len(normal_segs), BATCH_SIZE)]
 
                     for idx, batch in enumerate(batches):
@@ -1303,7 +1360,7 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
 
                 violations = check_glossary_violations(eng_txt, final_text, glossary_dict)
                 if violations:
-                    st.error("⚠️️ **مخالفة لقاموس الزمالة:** " + " | ".join([f"`{en}` ⟵ `{ar}`" for en, ar in violations]))
+                    st.error("⚠️ **مخالفة لقاموس الزمالة:** " + " | ".join([f"`{en}` ⟵ `{ar}`" for en, ar in violations]))
 
         chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{i}", value=item.get("is_approved", False))
         if chk != item.get("is_approved"): item["is_approved"] = chk; state_modified = True
@@ -1338,7 +1395,7 @@ if approved_count == total_segments and total_segments > 0:
                     success = push_to_drive_translator(file_id, ar_compiled)
                     if success:
                         r_email = task.get("reviewer", "")
-                        if task.get("translator") == r_email and r_email != "": new_status = STATUS_REV_COMPLETED
+                        if task.get("translator"] == r_email and r_email != "": new_status = STATUS_REV_COMPLETED
                         elif r_email != "": new_status = STATUS_REV_ASSIGNED
                         else: new_status = STATUS_TRANS_COMPLETED
                         update_assignment_status(file_id, new_status, reset_timer=True)
