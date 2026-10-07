@@ -526,7 +526,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                                     due_date, _, _ = calculate_sla_status(t.get("status"), t.get("sla_track"), t.get("stage_start_date"))
                                     rows_html += f"<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>{t.get('doc_name')}</b></td><td style='padding: 8px; color: #b91c1c;'>{due_date}</td><td style='padding: 8px;'>{vols.get(t.get('reviewer'), {}).get('name', t.get('reviewer'))}</td><td style='padding: 8px;'>{vols.get(t.get('recorder'), {}).get('name', 'غير محدد')}</td></tr>"
                                 cc_list.discard(assignee_email)
-                                # 🔑 تم تصحيح رابط البوابة هنا ليطابق الرابط الحقيقي للمستخدم
                                 html_body = f"""<html dir="rtl"><body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;"><h2>مرحباً {assignee_name}،</h2><p>تم تكليفك بمهام جديدة للعدد الحالي.</p><h3>📍 للبدء:</h3><ol><li>ادخل للمنصة: <a href="https://translation-revedit-2026.streamlit.app/">بوابة الترجمة</a></li><li>استخدم زر Google Login للتسجيل بإيميلك.</li></ol><h3>📋 المهام:</h3><table style="width: 100%; border-collapse: collapse; text-align: right;"><tr style="background-color: #f3f4f6;"><th style="padding: 8px;">المقال</th><th style="padding: 8px;">التسليم</th><th style="padding: 8px;">المدقق</th><th style="padding: 8px;">المسجل</th></tr>{rows_html}</table><p>ملاحظة: المنصة مزودة بمدقق يطابق <a href="https://docs.google.com/spreadsheets/d/{GLOSSARY_SPREADSHEET_ID}/edit">القاموس</a> تلقائياً.</p></body></html>"""
                                 try:
                                     msg = EmailMessage(); msg.set_content("Please enable HTML."); msg.add_alternative(html_body, subtype='html')
@@ -855,10 +854,29 @@ def save_draft_to_drive(file_id, user_email, row_index, processed_data):
         return True
     except Exception: return False
 
-def release_document_lock(row_index):
+def delete_draft_from_drive(file_id, user_email):
+    try:
+        draft_name = f".draft_{file_id}_{user_email}.json"
+        res_drive = drive_service.files().list(q=f"name='{draft_name}' and trashed=false", fields="files(id)").execute()
+        files = res_drive.get('files', [])
+        if files:
+            drive_service.files().delete(fileId=files[0]['id']).execute()
+    except Exception: 
+        pass
+
+def release_document_lock(row_index, file_id=None, user_email=None):
     if not row_index: return
     try:
-        sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}", valueInputOption="USER_ENTERED", body={"values": [["", "", "", ""]]}).execute()
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
+            range=f"'Sessions'!A{row_index}:D{row_index}", 
+            valueInputOption="USER_ENTERED", 
+            body={"values": [["", "", "", ""]]}
+        ).execute()
+        
+        if file_id and user_email:
+            delete_draft_from_drive(file_id, user_email)
+            
     except Exception: pass
 
 @st.cache_data(ttl=3600)
@@ -1188,7 +1206,7 @@ if app_mode == "Recorder Mode":
     if col_h2.button("⬅️ Back to Inbox", width="stretch"):
         st.session_state["active_task"] = None; st.session_state["source_file_id"] = None; st.rerun()
 
-    st.markdown("[🔗 Open Original Document in Google Docs](https://docs.google.com/document/d/edit)")
+    st.markdown(f"[🔗 Open Original Document in Google Docs](https://docs.google.com/document/d/{file_id}/edit)")
     
     paras = extract_text_from_drive(file_id)
     if paras:
@@ -1233,7 +1251,7 @@ with col_h2:
         if glossary_term_count > 0: st.success(f"📖 Glossary: {glossary_term_count} terms")
         else: st.warning("⚠️ Glossary: Not Loaded")
 
-st.markdown("[🔗 Open Document in Google Docs](https://docs.google.com/document/d/edit)")
+st.markdown(f"[🔗 Open Document in Google Docs](https://docs.google.com/document/d/{file_id}/edit)")
 is_bypass_task = task.get("translator") == ""
 
 if not st.session_state.get("processed_data"):
@@ -1316,12 +1334,14 @@ if not st.session_state.get("processed_data"):
                         elif item.get("arabic") == "[MISSING ARABIC TRANSLATION]":
                             trans_res = translate_with_ai(item.get("english", ""), glossary_data)
                             t_arabic = trans_res.get("arabic_translation", "")
-                            processed_results.append({"id": item.get("id"), "status": "major_rewrite", "english": item.get("english", ""), "original_arabic": "[MISSING]", "suggested_arabic": t_arabic, "reasoning": "⚠️️ Auto-translated orphaned English block.", "ar_start": None, "ar_end": None, "user_arabic": t_arabic, "is_approved": False })
+                            processed_results.append({"id": item.get("id"), "status": "major_rewrite", "english": item.get("english", ""), "original_arabic": "[MISSING]", "suggested_arabic": t_arabic, "reasoning": "⚠ Auto-translated orphaned English block.", "ar_start": None, "ar_end": None, "user_arabic": t_arabic, "is_approved": False })
                     processed_results.sort(key=lambda x: x.get("id", 0))
 
-            save_draft_to_drive(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), processed_results)
-            st.session_state["processed_data"] = processed_results
-            st.rerun()
+            if not save_draft_to_drive(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), processed_results):
+                st.error("⚠️ فشل الحفظ التلقائي (Autosave). عملك محفوظ حالياً في هذه الشاشة فقط — يرجى إبقاء الصفحة مفتوحة وإبلاغ المنسق لضمان عدم ضياع جهدك.")
+            else:
+                st.session_state["processed_data"] = processed_results
+                st.rerun()
 
 # --- EDITOR UI ---
 approved_count, finalized_data, state_modified = 0, [], False
@@ -1412,7 +1432,7 @@ if approved_count == total_segments and total_segments > 0:
                         update_assignment_status(file_id, new_status, reset_timer=True)
 
                 if success:
-                    release_document_lock(st.session_state.get("session_row_index"))
+                    release_document_lock(st.session_state.get("session_row_index"), file_id, st.session_state.get("user_email"))
                     st.session_state["active_task"] = None; st.session_state["source_file_id"] = None
                     st.session_state["processed_data"] = None; st.session_state["review_unlocked"] = False
                     st.balloons(); st.success("Task stage completed successfully!")
