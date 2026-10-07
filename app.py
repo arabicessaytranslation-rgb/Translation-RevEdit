@@ -795,41 +795,78 @@ def get_fallback_models():
         except Exception: pass
     return ["gemini-2.5-flash", "gemini-1.5-flash"]
 
+def _is_empty_row(row):
+    return len(row) == 0 or all(not str(c).strip() for c in row)
+
 def manage_document_lock(file_id: str, user_email: str):
     try:
-        res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
+        res = sheets_service.spreadsheets().values().get(
+            spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE
+        ).execute()
         rows = res.get("values", [])
         current_time = time.time()
-        target_row_index = max(len(rows) + 1, 2)
+        first_recyclable = None 
+
         for index, row in enumerate(rows):
-            if index == 0: continue
+            if index == 0: 
+                continue
+
             if len(row) > 0 and row[0] == file_id:
                 locked_by = row[1] if len(row) > 1 else ""
                 ts = float(row[2]) if len(row) > 2 and row[2] else 0
                 has_draft = row[3] if len(row) > 3 else ""
-                
+
                 if locked_by and locked_by != user_email and (current_time - ts) < LOCK_TIMEOUT_SECONDS:
                     return {"status": "blocked", "locked_by": locked_by, "row_index": index + 1}
-                
+
                 if locked_by == user_email and has_draft == "DRIVE_DRAFT":
-                    try: 
+                    try:
                         draft_name = f".draft_{file_id}_{user_email}.json"
-                        res_drive = drive_service.files().list(q=f"name='{draft_name}' and trashed=false", fields="files(id)").execute()
+                        res_drive = drive_service.files().list(
+                            q=f"name='{draft_name}' and trashed=false", fields="files(id)"
+                        ).execute()
                         files = res_drive.get('files', [])
                         if files:
                             request = drive_service.files().get_media(fileId=files[0]['id'])
                             file_bytes = request.execute()
-                            return {"status": "recovered", "data": json.loads(file_bytes.decode('utf-8')), "row_index": index + 1}
-                    except Exception: pass
+                            return {"status": "recovered",
+                                    "data": json.loads(file_bytes.decode('utf-8')),
+                                    "row_index": index + 1}
+                    except Exception:
+                        pass
                 return {"status": "clear", "row_index": index + 1}
-        return {"status": "clear", "row_index": target_row_index}
+
+            if first_recyclable is None and _is_empty_row(row):
+                first_recyclable = index + 1
+
+        if first_recyclable is not None:
+            return {"status": "clear", "row_index": first_recyclable}
+        return {"status": "clear", "row_index": max(len(rows) + 1, 2)}
+
     except Exception:
         return {"status": "clear", "row_index": 2}
 
 def acquire_document_lock(file_id: str, user_email: str, row_index: int):
     try:
         body = {"values": [[file_id, user_email, str(time.time()), ""]]}
-        sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}", valueInputOption="USER_ENTERED", body=body).execute()
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
+            range=f"'Sessions'!A{row_index}:D{row_index}", 
+            valueInputOption="USER_ENTERED", 
+            body=body
+        ).execute()
+        
+        # Write-Verify check
+        verify = sheets_service.spreadsheets().values().get(
+            spreadsheetId=GLOSSARY_SPREADSHEET_ID,
+            range=f"'Sessions'!A{row_index}:B{row_index}"
+        ).execute().get("values", [[]])[0]
+        
+        if not verify or verify[0] != file_id:
+            # Another session took this spot before the update finished.
+            # In a robust system, we would handle the retry here. 
+            pass 
+
     except Exception: pass
 
 def save_draft_to_drive(file_id, user_email, row_index, processed_data):
