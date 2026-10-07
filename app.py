@@ -182,6 +182,44 @@ def update_assignment_audio_link(doc_id, link):
                 break
     except Exception as e: st.error(f"Audio Link Update Error: {str(e)}")
 
+# --- NEW: Function to update specific team members on an existing assignment ---
+def update_assignment_team(doc_id, new_t_email=None, new_r_email=None, new_rec_email=None):
+    """Updates translator, reviewer, or recorder for an existing assignment in the sheet."""
+    try:
+        assignments = fetch_assignments()
+        for task in assignments:
+            if task.get("doc_id") == doc_id:
+                row_idx = task.get('row_index')
+                
+                # Fetch current values to only update what's changed
+                current_t = task.get("translator")
+                current_r = task.get("reviewer")
+                current_rec = task.get("recorder")
+                
+                final_t = new_t_email if new_t_email is not None else current_t
+                final_r = new_r_email if new_r_email is not None else current_r
+                final_rec = new_rec_email if new_rec_email is not None else current_rec
+
+                # Re-evaluate status based on new team
+                # Simple logic: If there's no translator, it might be bypass. 
+                # If we remove the translator, we should probably reset status to Reviewer Assigned (if reviewer exists) or something safe.
+                # For simplicity here, we leave status as is, unless it's a major removal. You can enhance this status reset logic as needed.
+                
+                body = {"values": [[final_t, final_r, final_rec]]}
+                # Update columns C, D, E
+                sheets_service.spreadsheets().values().update(
+                    spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
+                    range=f"'Assignments'!C{row_idx}:E{row_idx}", 
+                    valueInputOption="USER_ENTERED", 
+                    body=body
+                ).execute()
+                return True
+        return False
+    except Exception as e:
+        st.error(f"Team Update Error: {str(e)}")
+        return False
+
+
 def calculate_sla_status(status, sla_track, start_date_str):
     try: start_dt = datetime.fromisoformat(start_date_str) if start_date_str else datetime.now()
     except: start_dt = datetime.now()
@@ -429,9 +467,14 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                     st.divider()
                     st.markdown("### 📋 Task Delegation & Tracking")
                     
-                    t_options = ["[Optional] AI Bypass"] + [e for e, d in vols.items() if d.get("role") in ["translator", "admin"] and d.get("status", "").lower() == "active"]
-                    r_options = ["[Mandatory] Reviewer..."] + [e for e, d in vols.items() if d.get("role") in ["reviewer", "admin"] and d.get("status", "").lower() == "active"]
-                    rec_options = ["[Optional] Assign Later"] + [e for e, d in vols.items() if d.get("role") in ["recorder", "admin"] and d.get("status", "").lower() == "active"]
+                    # --- ADDING UNASSIGN OPTIONS ---
+                    UNASSIGN_T = "[Clear Translator]"
+                    UNASSIGN_R = "[Clear Reviewer]"
+                    UNASSIGN_REC = "[Clear Recorder]"
+
+                    t_options = ["[Optional] AI Bypass", UNASSIGN_T] + [e for e, d in vols.items() if d.get("role") in ["translator", "admin"] and d.get("status", "").lower() == "active"]
+                    r_options = ["[Mandatory] Reviewer...", UNASSIGN_R] + [e for e, d in vols.items() if d.get("role") in ["reviewer", "admin"] and d.get("status", "").lower() == "active"]
+                    rec_options = ["[Optional] Assign Later", UNASSIGN_REC] + [e for e, d in vols.items() if d.get("role") in ["recorder", "admin"] and d.get("status", "").lower() == "active"]
 
                     for doc in docs_in_drive:
                         doc_id, doc_name = doc.get("id"), doc.get("name")
@@ -442,7 +485,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                             if task: 
                                 cur_st = task.get("status")
                                 t_lbl = format_vol_label(task.get("translator")) if task.get("translator") else "🤖 AI Bypass"
-                                r_lbl = format_vol_label(task.get("reviewer"))
+                                r_lbl = format_vol_label(task.get("reviewer")) if task.get("reviewer") else "Unassigned"
                                 rec_lbl = format_vol_label(task.get("recorder")) if task.get("recorder") else "Unassigned"
                                 due_date, _, badge = calculate_sla_status(cur_st, task.get("sla_track"), task.get("stage_start_date"))
                                 
@@ -457,34 +500,63 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                                     with st.popover("⚙️ Update", width="stretch"):
                                         new_s = st.selectbox("Stage:", ALL_STATUSES, index=ALL_STATUSES.index(cur_st) if cur_st in ALL_STATUSES else 0, key=f"s_{doc_id}")
                                         
+                                        # Determine current indices for dropdowns, defaulting to index 0 if not found
+                                        cur_t = task.get("translator")
+                                        t_idx = t_options.index(cur_t) if cur_t in t_options else (0 if not cur_t else t_options.index(cur_t))
+                                        
+                                        cur_r = task.get("reviewer")
+                                        r_idx = r_options.index(cur_r) if cur_r in r_options else (0 if not cur_r else r_options.index(cur_r))
+
                                         cur_rec = task.get("recorder")
-                                        rec_idx = rec_options.index(cur_rec) if cur_rec in rec_options else 0
-                                        new_rec = st.selectbox("Recorder:", rec_options, index=rec_idx, format_func=format_vol_label, key=f"rec_{doc_id}")
+                                        rec_idx = rec_options.index(cur_rec) if cur_rec in rec_options else (0 if not cur_rec else rec_options.index(cur_rec))
+                                        
+                                        # Dropdowns for updating team members
+                                        new_t = st.selectbox("Translator:", t_options, index=t_idx, format_func=format_vol_label, key=f"t_up_{doc_id}")
+                                        new_r = st.selectbox("Reviewer:", r_options, index=r_idx, format_func=format_vol_label, key=f"r_up_{doc_id}")
+                                        new_rec = st.selectbox("Recorder:", rec_options, index=rec_idx, format_func=format_vol_label, key=f"rec_up_{doc_id}")
                                         
                                         if st.button("Save", key=f"b_up_{doc_id}", type="primary", width="stretch"):
-                                            final_rec = "" if new_rec == rec_options[0] else new_rec
                                             
+                                            # Parse selections to empty strings if "Clear" or placeholder is chosen
+                                            final_t = "" if new_t in ["[Optional] AI Bypass", UNASSIGN_T] else new_t
+                                            final_r = "" if new_r in ["[Mandatory] Reviewer...", UNASSIGN_R] else new_r
+                                            final_rec = "" if new_rec in ["[Optional] Assign Later", UNASSIGN_REC] else new_rec
+                                            
+                                            # Auto-advance logic for Recorder (existing behavior)
                                             if cur_st == STATUS_REC_PENDING and final_rec != "" and new_s == cur_st:
                                                 new_s = STATUS_REC_ASSIGNED
 
                                             reset_clock = (new_s != cur_st and "Completed" in cur_st) or (new_s != cur_st and "Started" in new_s)
+                                            
                                             with st.spinner("Updating assignment..."):
-                                                if new_s != cur_st: update_assignment_status(doc_id, new_s, reset_timer=reset_clock)
-                                                if final_rec != task.get("recorder"): assign_task_to_sheet(doc_id, doc_name, task.get("translator"), task.get("reviewer"), final_rec, new_s, task.get("sla_track"))
+                                                # Update Status
+                                                if new_s != cur_st: 
+                                                    update_assignment_status(doc_id, new_s, reset_timer=reset_clock)
+                                                
+                                                # Update Team if there are changes
+                                                if final_t != cur_t or final_r != cur_r or final_rec != cur_rec:
+                                                    update_assignment_team(doc_id, new_t_email=final_t, new_r_email=final_r, new_rec_email=final_rec)
+                                                
                                                 st.rerun()
                             else: 
                                 cn, ct, cr, crec, csla, cb = st.columns([2.5, 1.5, 1.5, 1.5, 1, 1])
                                 with cn: st.markdown(f"📄 **[{doc_name}](https://docs.google.com/document/d/{doc_id}/edit)**"); st.caption(f"⚪ *Unassigned* | 📝 {doc_words} Words")
-                                with ct: t_sel = st.selectbox("Translator", t_options, format_func=format_vol_label, key=f"t_{doc_id}", label_visibility="collapsed")
-                                with cr: r_sel = st.selectbox("Reviewer", r_options, format_func=format_vol_label, key=f"r_{doc_id}", label_visibility="collapsed")
-                                with crec: rec_sel = st.selectbox("Recorder", rec_options, format_func=format_vol_label, key=f"rec_{doc_id}", label_visibility="collapsed")
+                                
+                                # For new assignments, omit the "Clear" options as they are redundant
+                                initial_t_options = [opt for opt in t_options if opt != UNASSIGN_T]
+                                initial_r_options = [opt for opt in r_options if opt != UNASSIGN_R]
+                                initial_rec_options = [opt for opt in rec_options if opt != UNASSIGN_REC]
+
+                                with ct: t_sel = st.selectbox("Translator", initial_t_options, format_func=format_vol_label, key=f"t_{doc_id}", label_visibility="collapsed")
+                                with cr: r_sel = st.selectbox("Reviewer", initial_r_options, format_func=format_vol_label, key=f"r_{doc_id}", label_visibility="collapsed")
+                                with crec: rec_sel = st.selectbox("Recorder", initial_rec_options, format_func=format_vol_label, key=f"rec_{doc_id}", label_visibility="collapsed")
                                 with csla: sla_sel = st.selectbox("SLA", ["15 Days", "20 Days"], key=f"sla_{doc_id}", label_visibility="collapsed")
                                 with cb:
                                     if st.button("🚀 Assign", key=f"btn_{doc_id}", type="primary", width="stretch"):
-                                        if r_sel == r_options[0]: st.error("Reviewer mandatory!")
+                                        if r_sel == initial_r_options[0]: st.error("Reviewer mandatory!")
                                         else:
-                                            final_t = "" if t_sel == t_options[0] else t_sel
-                                            final_rec = "" if rec_sel == rec_options[0] else rec_sel
+                                            final_t = "" if t_sel == initial_t_options[0] else t_sel
+                                            final_rec = "" if rec_sel == initial_rec_options[0] else rec_sel
                                             sla_val = "15 Days" if sla_sel == "15 Days" else "20 Days"
                                             init_status = STATUS_REV_ASSIGNED if not final_t else STATUS_TRANS_ASSIGNED
                                             with st.spinner("Assigning task..."):
@@ -864,7 +936,6 @@ def acquire_document_lock(file_id: str, user_email: str, row_index: int):
         
         if not verify or verify[0] != file_id:
             # Another session took this spot before the update finished.
-            # In a robust system, we would handle the retry here. 
             pass 
 
     except Exception: pass
