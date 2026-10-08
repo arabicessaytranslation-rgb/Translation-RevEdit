@@ -790,7 +790,7 @@ if not st.session_state.get("source_file_id"):
 # ==========================================
 # 5. AI ENGINE & DOCUMENT PARSING
 # ==========================================
-client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"]) if GENAI_AVAILABLE else None
+client = genai.Client(api_key=st.secrets["GEMINI_API_KEYS"]) if GENAI_AVAILABLE else None
 safety_settings = []
 if GENAI_AVAILABLE:
     safety_settings = [
