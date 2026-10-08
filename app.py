@@ -803,12 +803,23 @@ if GENAI_AVAILABLE:
 # --- 🚀 API Key Rotation Pool ---
 gemini_clients = []
 if GENAI_AVAILABLE:
-    keys_str = st.secrets.get("GEMINI_API_KEYS", "")
-    if keys_str:
-        for k in keys_str.split(","):
-            clean_key = k.strip()
+    keys_data = st.secrets.get("GEMINI_API_KEYS")
+    
+    if keys_data:
+        # إذا كانت المفاتيح مكتوبة كقائمة في الإعدادات: ["key1", "key2"]
+        if isinstance(keys_data, list):
+            keys_list = keys_data
+        # إذا كانت المفاتيح مكتوبة كنص مفصول بفواصل: "key1,key2"
+        elif isinstance(keys_data, str):
+            keys_list = keys_data.split(",")
+        else:
+            keys_list = []
+            
+        for k in keys_list:
+            clean_key = str(k).strip()
             if clean_key:
                 gemini_clients.append(genai.Client(api_key=clean_key))
+                
     elif "GEMINI_API_KEY" in st.secrets:
         gemini_clients.append(genai.Client(api_key=st.secrets["GEMINI_API_KEY"]))
 
