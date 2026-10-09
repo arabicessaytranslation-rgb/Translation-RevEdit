@@ -973,7 +973,10 @@ def save_draft_to_drive(file_id, user_email, processed_data):
             ).execute()
             return True
         return False
-    except Exception: return False
+    except Exception as e:
+        # ✅ FIX: log the real error instead of silently swallowing it
+        st.session_state["_last_autosave_error"] = f"{type(e).__name__}: {e}"
+        return False
 
 def delete_draft_from_drive(file_id, user_email):
     try:
@@ -1497,11 +1500,14 @@ if st.session_state.get("processed_data") is None:
 
             if not processed_results:
                 processed_results = []
-                
+
+            # ✅ FIX: Always keep data in session state (in-memory) so the user can keep working,
+            # and only WARN if persistence to Drive fails instead of crashing.
+            st.session_state["processed_data"] = processed_results
             if not save_draft_to_drive(file_id, st.session_state.get("user_email"), processed_results):
-                st.error("⚠️ Autosave failed. Your work is only saved in this screen — please keep the page open and notify the coordinator to prevent data loss.")
+                err_detail = st.session_state.get("_last_autosave_error", "unknown")
+                st.warning(f"⚠️ Autosave to Drive failed ({err_detail}). Your work is kept in-memory only. If you refresh the page, progress may be lost — please notify the coordinator.")
             else:
-                st.session_state["processed_data"] = processed_results
                 st.rerun()
 
 # --- EDITOR UI ---
@@ -1512,9 +1518,11 @@ if st.button("💾 Save Draft Progress", type="secondary", use_container_width=T
     if save_draft_to_drive(file_id, st.session_state.get("user_email"), st.session_state.get("processed_data")):
         st.toast("✅ Progress saved to Drive successfully!", icon="💾")
     else:
-        st.error("⚠️ Failed to save progress to Drive.")
+        err_detail = st.session_state.get("_last_autosave_error", "unknown")
+        st.error(f"⚠️ Failed to save progress to Drive ({err_detail}).")
 
-for i, item in enumerate(st.session_state.get("processed_data", [])):
+# ✅ FIX: harden loop against processed_data being None
+for i, item in enumerate(st.session_state.get("processed_data") or []):
     seg_id, status_val = item.get("id", i + 1), item.get("status", "minor_edits")
     eng_txt, orig_ar, sugg_ar = item.get("english", ""), item.get("original_arabic", ""), item.get("suggested_arabic", item.get("arabic_translation", ""))
 
@@ -1566,7 +1574,7 @@ if pending_autosave:
 
 # --- SUBMISSION LOGIC ---
 st.divider()
-total_segments = len(st.session_state.get("processed_data", []))
+total_segments = len(st.session_state.get("processed_data") or [])
 st.write(f"### **Approved Segments: {approved_count} / {total_segments}**")
 
 if approved_count == total_segments and total_segments > 0:
