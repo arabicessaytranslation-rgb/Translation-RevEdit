@@ -1293,52 +1293,92 @@ def push_to_drive_translator(document_id, final_arabic_text):
         st.error(f"Failed to push to Drive. Error: {e}")
         return False
 
-# ✅ FIX: Reviewer push now retries without the strict revision check if needed.
+# ✅ FIX: Reviewer push now re-fetches the current doc and re-matches segments by content.
 def push_to_drive_reviewer(document_id, approved_segments, revision_id):
     docs_svc, _, _ = get_google_services()
     try:
-        requests = []
-        positional_segments = [seg for seg in approved_segments if seg.get("ar_start") is not None and seg.get("ar_end") is not None]
-        positional_segments.sort(key=lambda x: x["ar_start"], reverse=True)
-        
-        for seg in positional_segments:
-            requests.append({"deleteContentRange": {"range": {"startIndex": seg["ar_start"], "endIndex": seg["ar_end"]}}})
-            requests.append({"insertText": {"location": {"index": seg["ar_start"]}, "text": seg.get("final_arabic", "") + "\n"}})
-        
-        orphaned_segments = [seg for seg in approved_segments if seg.get("ar_start") is None]
-        if orphaned_segments:
-            orphaned_text = "\n\n--- Added Translations ---\n\n" + "\n\n".join([seg.get("final_arabic", "") for seg in orphaned_segments]) + "\n"
+        # --- Step 1: Fetch the CURRENT document (fresh indexes) ---
+        try:
+            doc = docs_svc.documents().get(documentId=document_id, includeTabsContent=True).execute()
+        except Exception:
             doc = docs_svc.documents().get(documentId=document_id).execute()
+
+        all_paras = []
+        def sweep(doc_obj):
+            temp = []
+            temp.extend(_parse_docs_elements(doc_obj.get("body", {}).get("content", [])))
+            for footer in doc_obj.get("footers", {}).values(): temp.extend(_parse_docs_elements(footer.get("content", [])))
+            for header in doc_obj.get("headers", {}).values(): temp.extend(_parse_docs_elements(header.get("content", [])))
+            return temp
+
+        tabs = doc.get("tabs", [])
+        if tabs:
+            for tab in tabs: all_paras.extend(sweep(tab.get("documentTab", {})))
+        else:
+            all_paras.extend(sweep(doc))
+
+        # Current Arabic paragraphs with fresh indexes
+        current_ar = [p for p in all_paras if re.search(r"[\u0600-\u06FF]", p.get("text", "")) and p.get("start") is not None and p.get("end") is not None]
+
+        # --- Step 2: Match approved positional segments to current Arabic paragraphs by text ---
+        positional_segs = [seg for seg in approved_segments if seg.get("ar_start") is not None and seg.get("ar_end") is not None]
+        orphaned_segs = [seg for seg in approved_segments if seg.get("ar_start") is None]
+
+        def norm(t): return re.sub(r"\s+", " ", (t or "").strip())
+        lookup = {}
+        for p in current_ar:
+            lookup.setdefault(norm(p.get("text", "")), []).append(p)
+
+        matched = []
+        unmatched_segs = []
+        for seg in positional_segs:
+            key = norm(seg.get("original_arabic", ""))
+            bucket = lookup.get(key, [])
+            if bucket:
+                target = bucket.pop(0)
+                matched.append({"start": target["start"], "end": target["end"], "final": seg.get("final_arabic", "")})
+            else:
+                unmatched_segs.append(seg)
+
+        # --- Step 3: Build delete+insert requests (descending order) ---
+        matched.sort(key=lambda r: r["start"], reverse=True)
+        requests = []
+        for m in matched:
+            requests.append({"deleteContentRange": {"range": {"startIndex": m["start"], "endIndex": m["end"]}}})
+            requests.append({"insertText": {"location": {"index": m["start"]}, "text": m["final"] + "\n"}})
+
+        # --- Step 4: Orphaned and unmatched segments appended at the end ---
+        tail_segments = orphaned_segs + unmatched_segs
+        if tail_segments:
+            tail_text = "\n\n--- Appended Translations ---\n\n" + "\n\n".join([seg.get("final_arabic", "") for seg in tail_segments]) + "\n"
             doc_body_elements = doc.get('body', {}).get('content', [])
             if doc_body_elements:
                 last_index = doc_body_elements[-1].get('endIndex', 2) - 1
-                requests.append({"insertText": {"location": {"index": last_index}, "text": orphaned_text}})
+                requests.append({"insertText": {"location": {"index": last_index}, "text": tail_text}})
 
         if not requests:
             return True
 
-        # Attempt 1: strict revision check (protects against concurrent edits when possible)
+        # --- Step 5: Send to Drive (with revision retry) ---
+        body = {"requests": requests}
+        if revision_id:
+            body["writeControl"] = {"requiredRevisionId": revision_id}
         try:
-            body = {"requests": requests}
-            if revision_id:
-                body["writeControl"] = {"requiredRevisionId": revision_id}
             docs_svc.documents().batchUpdate(documentId=document_id, body=body).execute()
+            if unmatched_segs:
+                st.warning(f"⚠️ {len(unmatched_segs)} segment(s) could not be matched to the current document and were appended at the end. Please review the document.")
             return True
         except Exception as first_err:
-            first_err_str = str(first_err)
-            # If the strict check failed because the revision moved on, retry without it.
-            # The Sessions-sheet lock already prevents concurrent editing in this app.
-            if revision_id and ("requiredRevisionId" in first_err_str or "400" in first_err_str):
+            err_str = str(first_err)
+            if revision_id and ("requiredRevisionId" in err_str or "400" in err_str):
                 body = {"requests": requests}
                 docs_svc.documents().batchUpdate(documentId=document_id, body=body).execute()
+                if unmatched_segs:
+                    st.warning(f"⚠️ {len(unmatched_segs)} segment(s) could not be matched to the current document and were appended at the end. Please review the document.")
                 return True
             raise first_err
     except Exception as e:
-        err_str = str(e)
-        if "requiredRevisionId" in err_str:
-            st.error("❌ The document was modified since you opened it, and the retry also failed. Please refresh the page and try again.")
-        else:
-            st.error(f"Failed to push to Drive. Error: {err_str[:400]}")
+        st.error(f"Failed to push to Drive. Error: {str(e)[:400]}")
         return False
 
 # ==========================================
@@ -1519,110 +1559,4 @@ approved_count, finalized_data, pending_autosave = 0, [], False
 st.divider()
 
 if st.button("💾 Save Draft Progress", type="secondary", use_container_width=True):
-    if save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("processed_data")):
-        st.toast("✅ Progress saved successfully!", icon="💾")
-    else:
-        err_detail = st.session_state.get("_last_autosave_error", "unknown")
-        st.error(f"⚠️ Failed to save progress ({err_detail}).")
-
-# Guard against processed_data being None
-for i, item in enumerate(st.session_state.get("processed_data") or []):
-    seg_id, status_val = item.get("id", i + 1), item.get("status", "minor_edits")
-    eng_txt, orig_ar, sugg_ar = item.get("english", ""), item.get("original_arabic", ""), item.get("suggested_arabic", item.get("arabic_translation", ""))
-
-    with st.container(border=True):
-        if app_mode == "Translator Mode":
-            st.markdown(f"### Segment {seg_id}")
-            col_en, col_ar = st.columns(2)
-            with col_en:
-                st.info(html.escape(eng_txt))
-                if item.get("glossary_notes"): st.caption(f"💡 **Glossary Matched:** {html.escape(item.get('glossary_notes'))}")
-            with col_ar:
-                default_val = item.get("user_arabic", item.get("arabic_translation", ""))
-                final_text = st.text_area("Final text", value=default_val, height=120, key=f"edit_{i}", label_visibility="collapsed")
-                # Detect text changes and mark for autosave.
-                if final_text != item.get("user_arabic"):
-                    item["user_arabic"] = final_text
-                    pending_autosave = True
-                
-                violations = check_glossary_violations(eng_txt, final_text, glossary_dict)
-                if violations:
-                    st.error("⚠️ **Glossary Violation:** " + " | ".join([f"`{html.escape(en)}` ⟵ `{html.escape(ar)}`" for en, ar in violations]))
-        else:
-            color = "🟢" if status_val == "perfect" else ("🟡" if status_val == "minor_edits" else "🔴")
-            st.markdown(f"### Segment {seg_id} | Status: {color} {status_val.upper()}")
-            col_en, col_ar = st.columns(2)
-            with col_en: st.info(html.escape(eng_txt))
-            with col_ar:
-                st.markdown(generate_html_diff(orig_ar, sugg_ar), unsafe_allow_html=True)
-                with st.expander("💡 View AI Reasoning & Glossary Audit"): st.markdown(html.escape(item.get("reasoning", item.get("glossary_notes", "No reasoning provided."))))
-                default_val = item.get("user_arabic", sugg_ar)
-                
-                final_text = st.text_area("Final Output", value=default_val, height=120, key=f"edit_ar_{i}", label_visibility="collapsed")
-                # Detect text changes and mark for autosave.
-                if final_text != item.get("user_arabic"):
-                    item["user_arabic"] = final_text
-                    pending_autosave = True
-
-                violations = check_glossary_violations(eng_txt, final_text, glossary_dict)
-                if violations:
-                    st.error("⚠️ **Glossary Violation:** " + " | ".join([f"`{html.escape(en)}` ⟵ `{html.escape(ar)}`" for en, ar in violations]))
-
-        chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{i}", value=item.get("is_approved", False))
-        if chk != item.get("is_approved"): 
-            item["is_approved"] = chk
-            pending_autosave = True 
-            
-        if chk:
-            approved_count += 1
-            if app_mode == "Translator Mode": finalized_data.append(final_text)
-            else: finalized_data.append({"final_arabic": final_text, "ar_start": item.get("ar_start"), "ar_end": item.get("ar_end")})
-
-if pending_autosave:
-    if save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("processed_data")):
-        st.toast("✅ Edits auto-saved", icon="💾")
-
-# --- SUBMISSION LOGIC ---
-st.divider()
-total_segments = len(st.session_state.get("processed_data") or [])
-st.write(f"### **Approved Segments: {approved_count} / {total_segments}**")
-
-if approved_count == total_segments and total_segments > 0:
-    st.success("🎉 All segments approved! Final review before pushing.")
-    if "review_unlocked" not in st.session_state: st.session_state["review_unlocked"] = False
-    
-    if not st.session_state["review_unlocked"]:
-        st.error("🚨 **CRITICAL STEP:** Please verify the narrative flow before finalizing.")
-        if st.button("👀 I confirm the final text is correct", use_container_width=True):
-            st.session_state["review_unlocked"] = True
-            st.rerun()
-    else:
-        if st.button("🚀 Push to Drive & Conclude Stage", type="primary", use_container_width=True):
-            with st.spinner("Processing Drive updates and concluding workflow..."):
-                if app_mode == "Translator Mode":
-                    ar_compiled = "\n\n".join([str(item) for item in finalized_data])
-                    success = push_to_drive_translator(file_id, ar_compiled)
-                    if success:
-                        r_email = task.get("reviewer", "")
-                        if task.get("translator") == r_email and r_email != "": new_status = STATUS_REV_COMPLETED
-                        elif r_email != "": new_status = STATUS_REV_ASSIGNED
-                        else: new_status = STATUS_TRANS_COMPLETED
-                        update_assignment_status(file_id, new_status, reset_timer=True)
-                else:
-                    if is_bypass_task:
-                        ar_compiled = "\n\n".join([item.get("final_arabic", "") if isinstance(item, dict) else str(item) for item in finalized_data])
-                        success = push_to_drive_translator(file_id, ar_compiled)
-                    else:
-                        success = push_to_drive_reviewer(file_id, finalized_data, st.session_state.get("doc_revision_id"))
-
-                    if success:
-                        rec_email = task.get("recorder", "")
-                        new_status = STATUS_REC_ASSIGNED if rec_email else STATUS_REC_PENDING
-                        update_assignment_status(file_id, new_status, reset_timer=True)
-
-                if success:
-                    release_document_lock(file_id, st.session_state.get("user_email"))
-                    st.session_state["active_task"] = None; st.session_state["source_file_id"] = None
-                    st.session_state["processed_data"] = None; st.session_state["review_unlocked"] = False
-                    st.balloons(); st.success("Task stage completed successfully!")
-                    time.sleep(2); st.rerun()
+    if save_draft_to_sheet
