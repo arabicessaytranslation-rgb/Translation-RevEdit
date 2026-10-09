@@ -1282,11 +1282,12 @@ def push_to_drive_translator(document_id, final_arabic_text):
         st.error(f"Failed to push to Drive. Error: {e}")
         return False
 
+# ✅ FIX: Reviewer push NEVER returns fake success. If nothing matched, it hard-fails with diagnostics.
 def push_to_drive_reviewer(document_id, approved_segments, revision_id):
-    """Pushes reviewer-approved text. Re-matches by content to survive external edits."""
+    """Pushes reviewer-approved text. Re-matches by content; NEVER fakes success."""
     docs_svc, _, _ = get_google_services()
     try:
-        # --- Step 1: Fetch the CURRENT document (fresh indexes) ---
+        # --- Fetch current doc for fresh indexes ---
         try:
             doc = docs_svc.documents().get(documentId=document_id, includeTabsContent=True).execute()
         except Exception:
@@ -1308,7 +1309,6 @@ def push_to_drive_reviewer(document_id, approved_segments, revision_id):
 
         current_ar = [p for p in all_paras if re.search(r"[\u0600-\u06FF]", p.get("text", "")) and p.get("start") is not None and p.get("end") is not None]
 
-        # --- Step 2: Match approved positional segments by text ---
         positional_segs = [seg for seg in approved_segments if seg.get("ar_start") is not None and seg.get("ar_end") is not None]
         orphaned_segs = [seg for seg in approved_segments if seg.get("ar_start") is None]
 
@@ -1328,14 +1328,14 @@ def push_to_drive_reviewer(document_id, approved_segments, revision_id):
             else:
                 unmatched_segs.append(seg)
 
-        # --- Step 3: Delete + insert requests (descending index order) ---
+        # --- Build delete+insert requests for matched (descending) ---
         matched.sort(key=lambda r: r["start"], reverse=True)
         requests = []
         for m in matched:
             requests.append({"deleteContentRange": {"range": {"startIndex": m["start"], "endIndex": m["end"]}}})
             requests.append({"insertText": {"location": {"index": m["start"]}, "text": m["final"] + "\n"}})
 
-        # --- Step 4: Append orphans + unmatched at end ---
+        # --- Append orphans + unmatched at end ---
         tail_segments = orphaned_segs + unmatched_segs
         if tail_segments:
             tail_text = "\n\n--- Appended Translations ---\n\n" + "\n\n".join([seg.get("final_arabic", "") for seg in tail_segments]) + "\n"
@@ -1344,17 +1344,34 @@ def push_to_drive_reviewer(document_id, approved_segments, revision_id):
                 last_index = doc_body_elements[-1].get('endIndex', 2) - 1
                 requests.append({"insertText": {"location": {"index": last_index}, "text": tail_text}})
 
-        if not requests:
-            return True
+        # --- Diagnostics stored for post-push inspection ---
+        st.session_state["_last_push_stats"] = {
+            "doc_id": document_id,
+            "total_approved": len(approved_segments),
+            "positional_segments": len(positional_segs),
+            "orphaned_segments": len(orphaned_segs),
+            "content_matched": len(matched),
+            "unmatched_appended": len(unmatched_segs),
+            "requests_built": len(requests),
+        }
 
-        # --- Step 5: Send to Drive (with revision retry) ---
+        # ✅ HARD FAIL if nothing to push — never fake success
+        if not requests:
+            st.error(
+                f"❌ **Nothing to push.** No approved segments could be matched to the current document. "
+                f"Approved: {len(approved_segments)} | Positional: {len(positional_segs)} | Orphaned: {len(orphaned_segs)}. "
+                f"Please close the task, refresh the page, and try again — or contact the coordinator."
+            )
+            return False
+
+        # --- Send to Drive ---
         body = {"requests": requests}
         if revision_id:
             body["writeControl"] = {"requiredRevisionId": revision_id}
         try:
             docs_svc.documents().batchUpdate(documentId=document_id, body=body).execute()
             if unmatched_segs:
-                st.warning(f"⚠️ {len(unmatched_segs)} segment(s) could not be matched to the current document and were appended at the end. Please review the document.")
+                st.warning(f"⚠️ {len(unmatched_segs)} segment(s) could not be matched and were appended at the end of the document. Please review the bottom of the doc.")
             return True
         except Exception as first_err:
             err_str = str(first_err)
@@ -1362,7 +1379,7 @@ def push_to_drive_reviewer(document_id, approved_segments, revision_id):
                 body = {"requests": requests}
                 docs_svc.documents().batchUpdate(documentId=document_id, body=body).execute()
                 if unmatched_segs:
-                    st.warning(f"⚠️ {len(unmatched_segs)} segment(s) could not be matched to the current document and were appended at the end. Please review the document.")
+                    st.warning(f"⚠️ {len(unmatched_segs)} segment(s) could not be matched and were appended at the end of the document. Please review the bottom of the doc.")
                 return True
             raise first_err
     except Exception as e:
@@ -1653,6 +1670,14 @@ if approved_count == total_segments and total_segments > 0:
                         update_assignment_status(file_id, new_status, reset_timer=True)
 
                 if success:
+                    # Show push diagnostics before navigating away
+                    stats = st.session_state.get("_last_push_stats")
+                    if stats:
+                        with st.expander("📊 Push Diagnostics (click to expand)", expanded=False):
+                            st.json(stats)
+                            st.caption("If 'content_matched' is lower than 'positional_segments', some segments were appended at the end of the doc instead of replacing in place. This happens when the document was edited externally.")
+                        time.sleep(1)
+                    
                     release_document_lock(file_id, st.session_state.get("user_email"))
                     st.session_state["active_task"] = None; st.session_state["source_file_id"] = None
                     st.session_state["processed_data"] = None; st.session_state["review_unlocked"] = False
