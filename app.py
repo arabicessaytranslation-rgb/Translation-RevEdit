@@ -1202,88 +1202,70 @@ def upload_audio_to_drive(uploaded_file, doc_name, parent_folder_id):
 # NEW FUNCTIONS ADDED TO FIX DRIVE PUSH ERRORS
 # ---------------------------------------------------------
 def smart_align(paras):
-    """Aligns paragraph pairs gracefully regardless of language sequence."""
-    segments = []
-    current_ar = None
-    current_eng = None
-    current_ar_start = None
-    current_ar_end = None
-    seg_id = 1
+    """Aligns paragraphs by pairing the top Arabic block with the bottom English block."""
+    arabic_paras = []
+    english_paras = []
     
     for p in paras:
-        text = p.get("text", "")
+        text = p.get("text", "").strip()
+        if not text or text.startswith("--- Original"): 
+            continue
+            
         is_arabic = bool(re.search(r"[\u0600-\u06FF]", text))
-        
         if is_arabic:
-            if current_ar is not None:
-                # We already have an Arabic block. A new one means the previous pair is done.
-                segments.append({
-                    "id": seg_id,
-                    "english": current_eng if current_eng else "[MISSING ENGLISH SOURCE]",
-                    "arabic": current_ar,
-                    "ar_start": current_ar_start,
-                    "ar_end": current_ar_end
-                })
-                seg_id += 1
-                current_eng = None
-                current_ar = text
-                current_ar_start = p.get("start")
-                current_ar_end = p.get("end")
-            else:
-                current_ar = text
-                current_ar_start = p.get("start")
-                current_ar_end = p.get("end")
+            arabic_paras.append(p)
         else:
-            if current_eng is not None:
-                # We already have an English block. A new one means the previous pair is done.
-                segments.append({
-                    "id": seg_id,
-                    "english": current_eng,
-                    "arabic": current_ar if current_ar else "[MISSING ARABIC TRANSLATION]",
-                    "ar_start": current_ar_start,
-                    "ar_end": current_ar_end
-                })
-                seg_id += 1
-                current_ar = None
-                current_ar_start = None
-                current_ar_end = None
-                current_eng = text
-            else:
-                current_eng = text
-                
-    if current_ar or current_eng:
+            english_paras.append(p)
+            
+    segments = []
+    max_len = max(len(arabic_paras), len(english_paras))
+    
+    for i in range(max_len):
+        ar_p = arabic_paras[i] if i < len(arabic_paras) else None
+        en_p = english_paras[i] if i < len(english_paras) else None
+        
         segments.append({
-            "id": seg_id,
-            "english": current_eng if current_eng else "[MISSING ENGLISH SOURCE]",
-            "arabic": current_ar if current_ar else "[MISSING ARABIC TRANSLATION]",
-            "ar_start": current_ar_start,
-            "ar_end": current_ar_end
+            "id": i + 1,
+            "english": en_p.get("text") if en_p else "[MISSING ENGLISH SOURCE]",
+            "en_start": en_p.get("start") if en_p else None,
+            "arabic": ar_p.get("text") if ar_p else "[MISSING ARABIC TRANSLATION]",
+            "ar_start": ar_p.get("start") if ar_p else None,
+            "ar_end": ar_p.get("end") if ar_p else None
         })
         
     return segments
 
 def push_to_drive_translator(file_id, finalized_data):
-    """Inserts the Arabic translation segment by segment above the original English paragraph."""
+    """Inserts the complete Arabic translation at the very beginning of the document."""
     try:
         docs_svc, _, _ = get_google_services()
         
-        # We must insert in reverse order so pushing text doesn't shift the indices of following inserts
-        valid_inserts = [item for item in finalized_data if item.get('en_start') is not None]
-        valid_inserts.sort(key=lambda x: x['en_start'], reverse=True)
-
-        requests = []
-        for item in valid_inserts:
-            requests.append({
+        # Extract text from the structured dict list or raw strings (backward compatibility)
+        arabic_paragraphs = []
+        for item in finalized_data:
+            if isinstance(item, dict):
+                arabic_paragraphs.append(item.get('final_arabic', ''))
+            else:
+                arabic_paragraphs.append(str(item))
+        
+        # Join with double newlines to maintain paragraph structure
+        arabic_text = "\n\n".join(arabic_paragraphs)
+        
+        # Create the final block to insert at index 1
+        insert_text = arabic_text + "\n\n\n--- Original English Document ---\n\n"
+        
+        requests = [
+            {
                 'insertText': {
                     'location': {
-                        'index': item['en_start'],
+                        'index': 1,
                     },
-                    'text': item['final_arabic'] + "\n"
+                    'text': insert_text
                 }
-            })
+            }
+        ]
             
-        if requests:
-            docs_svc.documents().batchUpdate(documentId=file_id, body={'requests': requests}).execute()
+        docs_svc.documents().batchUpdate(documentId=file_id, body={'requests': requests}).execute()
         return True
     except Exception as e:
         st.error(f"Failed to push translation to Drive: {e}")
