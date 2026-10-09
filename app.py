@@ -902,7 +902,7 @@ def manage_document_lock(file_id: str, user_email: str):
                 if locked_by and locked_by != user_email and (current_time - ts) < LOCK_TIMEOUT_SECONDS:
                     return {"status": "blocked", "locked_by": locked_by, "row_index": index + 1}
 
-                # ✅ FIX: Recover draft JSON directly from the sheet cell (no Drive lookup)
+                # ✅ Recover draft JSON directly from the sheet cell (no Drive lookup)
                 if locked_by == user_email and has_draft:
                     try:
                         return {"status": "recovered",
@@ -941,7 +941,7 @@ def acquire_document_lock(file_id: str, user_email: str, row_index: int):
             pass 
     except Exception: pass
 
-# ✅ FIX: New draft-save function — writes JSON directly into the Sessions sheet cell D.
+# ✅ Draft-save function — writes JSON directly into the Sessions sheet cell D.
 def save_draft_to_sheet(file_id, user_email, processed_data):
     """Saves draft JSON directly into the Sessions sheet cell D (no Drive writes)."""
     try:
@@ -1386,7 +1386,17 @@ col_h1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
 with col_h2:
     c_btn, c_glos = st.columns([1, 1])
     if c_btn.button("⬅️ Back to Inbox", use_container_width=True):
-        st.session_state["active_task"] = None; st.session_state["source_file_id"] = None; st.session_state["processed_data"] = None; st.rerun()
+        # ✅ FIX: Save any pending work before wiping the session state.
+        if st.session_state.get("processed_data"):
+            save_draft_to_sheet(
+                file_id,
+                st.session_state.get("user_email"),
+                st.session_state.get("processed_data"),
+            )
+        st.session_state["active_task"] = None
+        st.session_state["source_file_id"] = None
+        st.session_state["processed_data"] = None
+        st.rerun()
     with c_glos:
         if glossary_term_count > 0: st.success(f"📖 Glossary: {glossary_term_count} terms")
         else: st.warning("⚠️ Glossary: Not Loaded")
@@ -1481,8 +1491,6 @@ if st.session_state.get("processed_data") is None:
             if not processed_results:
                 processed_results = []
 
-            # ✅ FIX: Always keep data in session state (in-memory) so the user can keep working.
-            # Save to the Sheets cell (cell D) instead of Drive — no more quota issues.
             st.session_state["processed_data"] = processed_results
             if not save_draft_to_sheet(file_id, st.session_state.get("user_email"), processed_results):
                 err_detail = st.session_state.get("_last_autosave_error", "unknown")
@@ -1516,7 +1524,10 @@ for i, item in enumerate(st.session_state.get("processed_data") or []):
             with col_ar:
                 default_val = item.get("user_arabic", item.get("arabic_translation", ""))
                 final_text = st.text_area("Final text", value=default_val, height=120, key=f"edit_{i}", label_visibility="collapsed")
-                item["user_arabic"] = final_text
+                # ✅ FIX: Detect text changes and mark for autosave.
+                if final_text != item.get("user_arabic"):
+                    item["user_arabic"] = final_text
+                    pending_autosave = True
                 
                 violations = check_glossary_violations(eng_txt, final_text, glossary_dict)
                 if violations:
@@ -1532,7 +1543,10 @@ for i, item in enumerate(st.session_state.get("processed_data") or []):
                 default_val = item.get("user_arabic", sugg_ar)
                 
                 final_text = st.text_area("Final Output", value=default_val, height=120, key=f"edit_ar_{i}", label_visibility="collapsed")
-                item["user_arabic"] = final_text 
+                # ✅ FIX: Detect text changes and mark for autosave.
+                if final_text != item.get("user_arabic"):
+                    item["user_arabic"] = final_text
+                    pending_autosave = True
 
                 violations = check_glossary_violations(eng_txt, final_text, glossary_dict)
                 if violations:
