@@ -1185,7 +1185,7 @@ if not st.session_state.get("processed_data"):
             progress_bar.progress((idx + 1) / len(rev_batches))
         else:
           segments = smart_align(paras)
-          normal_segs = [s for s in segments if s.get("english") != "[MISSING ENGLISH SOURCE]" and s.get("arabic"] != "[MISSING ARABIC TRANSLATION]"]
+          normal_segs = [s for s in segments if s.get("english") != "[MISSING ENGLISH SOURCE]" and s.get("arabic") != "[MISSING ARABIC TRANSLATION]"]
           batches = [normal_segs[i : i + BATCH_SIZE] for i in range(0, len(normal_segs), BATCH_SIZE)]
           for idx, batch in enumerate(batches):
             ai_results = review_batch_with_fallback(batch, glossary_data)
