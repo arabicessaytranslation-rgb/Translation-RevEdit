@@ -339,7 +339,7 @@ def login_screen():
               elif role == "translator":
                   mode = "Translator Mode"
               elif role == "reviewer":
-                  mode = "Recorder Mode"
+                  mode = "Reviewer Mode"
               elif role == "recorder":
                   mode = "Recorder Mode"
               else:
@@ -829,7 +829,9 @@ if not st.session_state.get("source_file_id"):
 # ==========================================
 # 5. AI ENGINE & DOCUMENT PARSING
 # ==========================================
-client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"]) if GENAI_AVAILABLE else None
+
+# Remove static global client configuration 
+# (Client will now be configured dynamically per request to allow key rotation)
 safety_settings = []
 if GENAI_AVAILABLE:
   safety_settings = [
@@ -838,6 +840,29 @@ if GENAI_AVAILABLE:
       types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
       types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
   ]
+
+
+def get_api_key_list():
+  """Extract list of API keys safely from Streamlit secrets."""
+  keys = st.secrets.get("GEMINI_API_KEYS")
+  if isinstance(keys, str):
+      return [k.strip() for k in keys.split(",") if k.strip()]
+  elif isinstance(keys, list):
+      return [str(k).strip() for k in keys]
+  elif "GEMINI_API_KEY" in st.secrets:
+      return [st.secrets["GEMINI_API_KEY"]]
+  return []
+
+
+def get_gemini_client():
+  """Returns a genai.Client instantiated with a randomly selected key to distribute quota."""
+  if not GENAI_AVAILABLE:
+      return None
+  keys = get_api_key_list()
+  if not keys:
+      return None
+  selected_key = random.choice(keys)
+  return genai.Client(api_key=selected_key)
 
 
 class TranslationResult(BaseModel):
@@ -871,6 +896,8 @@ class ReviewBatchResult(BaseModel):
 def get_fallback_models():
   secret_model = st.secrets.get("ACTIVE_MODEL", "").strip()
   if secret_model: return [secret_model]
+  
+  client = get_gemini_client()
   if GENAI_AVAILABLE and client is not None:
     try:
       available_flash_models = []
@@ -981,6 +1008,11 @@ def _is_retryable(err_str): return any(kw.lower() in err_str.lower() for kw in R
 def _backoff_sleep(attempt): time.sleep(min(BASE_BACKOFF_SECONDS * (2**attempt), MAX_BACKOFF_SECONDS))
 
 def _call_gemini(model_name, prompt, schema_type):
+  # Generates a fresh client dynamically for every single call to rotate quotas
+  client = get_gemini_client()
+  if not client:
+      raise ValueError("No Gemini API keys configured or GenAI SDK unavailable.")
+      
   response = client.models.generate_content(
       model=model_name, contents=prompt,
       config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema_type, safety_settings=safety_settings, temperature=0.2),
@@ -1017,6 +1049,8 @@ English Source: "{english}"
         parsed = _call_gemini(model_name, prompt, TranslationResult)
         return {"arabic_translation": parsed.get("arabic_translation", ""), "glossary_notes": parsed.get("glossary_notes", "")}
       except Exception as e:
+        # If this hits a rate limit, the backoff runs and the NEXT loop iteration 
+        # calls _call_gemini which dynamically selects a NEW key for the retry.
         if _is_retryable(str(e)): _backoff_sleep(attempt)
   return {"arabic_translation": "", "glossary_notes": "⚠ Error"}
 
@@ -1047,7 +1081,7 @@ Original Arabic: "{arabic}"
 
 
 def translate_batch_with_fallback(batch_segments, glossary_text):
-  if not GENAI_AVAILABLE or client is None:
+  if not GENAI_AVAILABLE or not get_api_key_list():
     return [translate_with_ai(s.get("english", ""), glossary_text) for s in batch_segments]
   input_payload = "\n\n".join([f"ID: {s.get('id', 0)}\nText: {s.get('english', '')}" for s in batch_segments])
 
@@ -1086,7 +1120,7 @@ Segments to Translate:
 
 
 def review_batch_with_fallback(batch_segments, glossary_text):
-  if not GENAI_AVAILABLE or client is None:
+  if not GENAI_AVAILABLE or not get_api_key_list():
     return [review_with_ai(s.get("english", ""), s.get("arabic", ""), glossary_text) for s in batch_segments]
   input_payload = "\n\n".join([f"ID: {s.get('id', 0)}\nEnglish: {s.get('english', '')}\nArabic: {s.get('arabic', '')}" for s in batch_segments])
 
