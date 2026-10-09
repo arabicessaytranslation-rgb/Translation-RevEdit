@@ -282,6 +282,7 @@ if not login_screen(): st.stop()
 
 if "processed_data" not in st.session_state: st.session_state["processed_data"] = None
 if "source_file_id" not in st.session_state: st.session_state["source_file_id"] = None
+if "session_row_index" not in st.session_state: st.session_state["session_row_index"] = None
 if "active_task" not in st.session_state: st.session_state["active_task"] = None
 if "admin_last_refresh" not in st.session_state: st.session_state["admin_last_refresh"] = 0
 
@@ -901,19 +902,12 @@ def manage_document_lock(file_id: str, user_email: str):
                 if locked_by and locked_by != user_email and (current_time - ts) < LOCK_TIMEOUT_SECONDS:
                     return {"status": "blocked", "locked_by": locked_by, "row_index": index + 1}
 
-                if locked_by == user_email and has_draft == "DRIVE_DRAFT":
+                # ✅ FIX: Recover draft JSON directly from the sheet cell (no Drive lookup)
+                if locked_by == user_email and has_draft:
                     try:
-                        draft_name = f".draft_{file_id}_{user_email}.json"
-                        res_drive = drive_service.files().list(
-                            q=f"name='{draft_name}' and trashed=false", fields="files(id)"
-                        ).execute()
-                        files = res_drive.get('files', [])
-                        if files:
-                            request = drive_service.files().get_media(fileId=files[0]['id'])
-                            file_bytes = request.execute()
-                            return {"status": "recovered",
-                                    "data": json.loads(file_bytes.decode('utf-8')),
-                                    "row_index": index + 1}
+                        return {"status": "recovered",
+                                "data": json.loads(has_draft),
+                                "row_index": index + 1}
                     except Exception:
                         pass
                 return {"status": "clear", "row_index": index + 1}
@@ -947,46 +941,32 @@ def acquire_document_lock(file_id: str, user_email: str, row_index: int):
             pass 
     except Exception: pass
 
-def save_draft_to_drive(file_id, user_email, processed_data):
+# ✅ FIX: New draft-save function — writes JSON directly into the Sessions sheet cell D.
+def save_draft_to_sheet(file_id, user_email, processed_data):
+    """Saves draft JSON directly into the Sessions sheet cell D (no Drive writes)."""
     try:
-        draft_name = f".draft_{file_id}_{user_email}.json"
-        json_data = json.dumps(processed_data, ensure_ascii=False).encode('utf-8')
-        media = MediaIoBaseUpload(io.BytesIO(json_data), mimetype='application/json', resumable=True)
-        
-        res_drive = drive_service.files().list(q=f"name='{draft_name}' and trashed=false", fields="files(id)").execute()
-        files = res_drive.get('files', [])
-        if files:
-            drive_service.files().update(fileId=files[0]['id'], media_body=media).execute()
-        else:
-            parent_id = st.session_state.get("active_task_parent_folder", "")
-            file_metadata = {'name': draft_name, 'parents': [parent_id] if parent_id else []}
-            drive_service.files().create(body=file_metadata, media_body=media).execute()
-
+        json_data = json.dumps(processed_data, ensure_ascii=False)
+        # Google Sheets cell hard-limit: 50,000 chars. Guard with margin.
+        if len(json_data) > 49000:
+            st.session_state["_last_autosave_error"] = (
+                f"Draft too large for a Sheets cell ({len(json_data)} chars)."
+            )
+            return False
         real_row = _get_live_session_row(file_id)
-        if real_row:
-            body = {"values": [[file_id, user_email, str(time.time()), "DRIVE_DRAFT"]]}
-            sheets_service.spreadsheets().values().update(
-                spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
-                range=f"'Sessions'!A{real_row}:D{real_row}", 
-                valueInputOption="USER_ENTERED", 
-                body=body
-            ).execute()
-            return True
-        return False
+        if not real_row:
+            st.session_state["_last_autosave_error"] = "No session row found."
+            return False
+        body = {"values": [[file_id, user_email, str(time.time()), json_data]]}
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=GLOSSARY_SPREADSHEET_ID,
+            range=f"'Sessions'!A{real_row}:D{real_row}",
+            valueInputOption="USER_ENTERED",
+            body=body,
+        ).execute()
+        return True
     except Exception as e:
-        # ✅ FIX: log the real error instead of silently swallowing it
         st.session_state["_last_autosave_error"] = f"{type(e).__name__}: {e}"
         return False
-
-def delete_draft_from_drive(file_id, user_email):
-    try:
-        draft_name = f".draft_{file_id}_{user_email}.json"
-        res_drive = drive_service.files().list(q=f"name='{draft_name}' and trashed=false", fields="files(id)").execute()
-        files = res_drive.get('files', [])
-        if files:
-            drive_service.files().delete(fileId=files[0]['id']).execute()
-    except Exception: 
-        pass
 
 def release_document_lock(file_id, user_email):
     real_row = _get_live_session_row(file_id)
@@ -999,9 +979,7 @@ def release_document_lock(file_id, user_email):
                 body={"values": [["", "", "", ""]]}
             ).execute()
         except Exception: pass
-        
-    if file_id and user_email:
-        delete_draft_from_drive(file_id, user_email)
+    # No Drive file to delete — drafts live in the sheet cell.
 
 @st.cache_data(ttl=3600)
 def fetch_glossary():
@@ -1421,9 +1399,11 @@ if st.session_state.get("processed_data") is None:
     if lock["status"] == "blocked":
         st.error(f"🛑 **Document In Use:** This document is currently locked by `{lock.get('locked_by', 'another user')}`."); st.stop()
     elif lock["status"] == "recovered":
+        st.session_state["session_row_index"] = lock["row_index"]
         st.session_state["processed_data"] = lock["data"]
         st.success("♻️ **Session Recovered.** Restored your previous work.")
     elif lock["status"] == "clear":
+        st.session_state["session_row_index"] = lock["row_index"]
         acquire_document_lock(file_id, st.session_state.get("user_email"), lock["row_index"])
         paras = extract_text_from_drive(file_id)
 
@@ -1501,12 +1481,12 @@ if st.session_state.get("processed_data") is None:
             if not processed_results:
                 processed_results = []
 
-            # ✅ FIX: Always keep data in session state (in-memory) so the user can keep working,
-            # and only WARN if persistence to Drive fails instead of crashing.
+            # ✅ FIX: Always keep data in session state (in-memory) so the user can keep working.
+            # Save to the Sheets cell (cell D) instead of Drive — no more quota issues.
             st.session_state["processed_data"] = processed_results
-            if not save_draft_to_drive(file_id, st.session_state.get("user_email"), processed_results):
+            if not save_draft_to_sheet(file_id, st.session_state.get("user_email"), processed_results):
                 err_detail = st.session_state.get("_last_autosave_error", "unknown")
-                st.warning(f"⚠️ Autosave to Drive failed ({err_detail}). Your work is kept in-memory only. If you refresh the page, progress may be lost — please notify the coordinator.")
+                st.warning(f"⚠️ Autosave failed ({err_detail}). Your work is kept in-memory only. If you refresh the page, progress may be lost — please notify the coordinator.")
             else:
                 st.rerun()
 
@@ -1515,13 +1495,13 @@ approved_count, finalized_data, pending_autosave = 0, [], False
 st.divider()
 
 if st.button("💾 Save Draft Progress", type="secondary", use_container_width=True):
-    if save_draft_to_drive(file_id, st.session_state.get("user_email"), st.session_state.get("processed_data")):
-        st.toast("✅ Progress saved to Drive successfully!", icon="💾")
+    if save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("processed_data")):
+        st.toast("✅ Progress saved successfully!", icon="💾")
     else:
         err_detail = st.session_state.get("_last_autosave_error", "unknown")
-        st.error(f"⚠️ Failed to save progress to Drive ({err_detail}).")
+        st.error(f"⚠️ Failed to save progress ({err_detail}).")
 
-# ✅ FIX: harden loop against processed_data being None
+# ✅ Guard against processed_data being None
 for i, item in enumerate(st.session_state.get("processed_data") or []):
     seg_id, status_val = item.get("id", i + 1), item.get("status", "minor_edits")
     eng_txt, orig_ar, sugg_ar = item.get("english", ""), item.get("original_arabic", ""), item.get("suggested_arabic", item.get("arabic_translation", ""))
@@ -1569,7 +1549,7 @@ for i, item in enumerate(st.session_state.get("processed_data") or []):
             else: finalized_data.append({"final_arabic": final_text, "ar_start": item.get("ar_start"), "ar_end": item.get("ar_end")})
 
 if pending_autosave:
-    if save_draft_to_drive(file_id, st.session_state.get("user_email"), st.session_state.get("processed_data")):
+    if save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("processed_data")):
         st.toast("✅ Edits auto-saved", icon="💾")
 
 # --- SUBMISSION LOGIC ---
