@@ -104,7 +104,6 @@ GLOSSARY_RANGE = "'المصطلحات'!A:D"
 GLOSSARY_DATA_RANGE = "'المصطلحات'!C:D"
 SESSIONS_RANGE = "'Sessions'!A:D"
 VOLUNTEERS_RANGE = "'Volunteers'!A:D"
-# Expanded to K to support deadlines
 ASSIGNMENTS_RANGE = "'Assignments'!A:K" 
 
 LOCK_TIMEOUT_SECONDS = 14400
@@ -189,7 +188,7 @@ def fetch_assignments():
     assignments = []
     if len(rows) > 1:
       for idx, r in enumerate(rows[1:]):
-        r.extend([""] * (11 - len(r))) # Ensure 11 columns padded for deadlines
+        r.extend([""] * (11 - len(r)))
         assignments.append({
             "row_index": idx + 2,
             "doc_id": r[0].strip(),
@@ -253,7 +252,6 @@ def update_assignment_audio_link(doc_id, link):
       break
 
 def extract_id_from_url(url):
-    """Universal regex to pluck Google Drive IDs from folder or file URLs."""
     match_folder = re.search(r'folders/([a-zA-Z0-9-_]+)', url)
     if match_folder: return match_folder.group(1)
     match_file = re.search(r'd/([a-zA-Z0-9-_]+)', url)
@@ -375,7 +373,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                   if not docs:
                       st.warning("No Google Docs found in this folder.")
                   else:
-                      # 1. Gather word counts
                       doc_stats = []
                       for d in docs:
                           try:
@@ -389,15 +386,13 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                               word_count = len(text_str.split())
                               doc_stats.append({'id': d['id'], 'name': d['name'], 'wc': word_count})
                           except:
-                              doc_stats.append({'id': d['id'], 'name': d['name'], 'wc': 500}) # Safe fallback
+                              doc_stats.append({'id': d['id'], 'name': d['name'], 'wc': 500})
                       
-                      # Sort heaviest to lightest
                       doc_stats.sort(key=lambda x: x['wc'], reverse=True)
 
-                      # 2. Calculate proportional schedule
                       today = datetime.today().date()
                       total_days = (sub_date - today).days
-                      if total_days < 4: total_days = 4 # Absolute minimum failsafe
+                      if total_days < 4: total_days = 4
                       
                       t_days = max(1, int(total_days * 0.35))
                       r_days = max(1, int(total_days * 0.35))
@@ -412,7 +407,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                       s_rec_due = rec_due.strftime("%b %d")
                       s_final = sub_date.strftime("%b %d, %Y")
 
-                      # 3. Load Balancer Assignment
                       loads_t = {email: 0 for email in pool_t}
                       loads_r = {email: 0 for email in pool_r}
                       loads_rec = {email: 0 for email in pool_rec}
@@ -440,7 +434,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
       except Exception as e:
         st.error(f"Google Drive Error: {e}")
 
-    # Active Tracker Matrix
     st.subheader("📊 Active Task Tracker")
     curr_time = time.time()
     time_since_refresh = curr_time - st.session_state["admin_last_refresh"]
@@ -455,7 +448,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
             st.rerun()
 
     live_tasks = fetch_assignments()
-    # Filter out submitted tasks from the active view
     active_tasks = [t for t in live_tasks if t.get("status") != STATUS_SUBMITTED]
     ready_tasks = [t for t in live_tasks if t.get("status") == STATUS_REC_COMPLETED]
 
@@ -482,7 +474,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
         r_disp = format_vol_label(t.get("reviewer"))
         rec_disp = format_vol_label(t.get("recorder")) if t.get("recorder") else "Unassigned"
         
-        # Build Deadline Strings
         dl_t = f" (Due {t.get('t_due')})" if t.get('t_due') else ""
         dl_r = f" (Due {t.get('r_due')})" if t.get('r_due') else ""
         dl_rec = f" (Due {t.get('rec_due')})" if t.get('rec_due') else ""
@@ -499,7 +490,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                 update_assignment_status(d_id, new_s)
                 st.rerun()
 
-    # The Final Deployment Desk
     st.divider()
     st.subheader("📤 Final Deployment Desk")
     sub_link = st.text_input("🔗 Paste Edition Submission Folder Link (Google Drive):", placeholder="https://drive.google.com/drive/folders/...")
@@ -517,13 +507,11 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                     else:
                         with st.spinner("Copying assets..."):
                             try:
-                                # 1. Copy Document
                                 drive_service.files().copy(
                                     fileId=rt.get("doc_id"), 
                                     body={'name': f"[Final Arabic] {rt.get('doc_name')}", 'parents': [sub_id]}
                                 ).execute()
                                 
-                                # 2. Copy Audio if exists
                                 if rt.get("audio_link"):
                                     aud_id = extract_id_from_url(rt.get("audio_link"))
                                     if aud_id:
@@ -532,13 +520,12 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                                             body={'parents': [sub_id]}
                                         ).execute()
                                 
-                                # 3. Mark Submitted
                                 update_assignment_status(rt.get("doc_id"), STATUS_SUBMITTED)
                                 st.success("Transfer complete!")
                                 time.sleep(1)
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"Transfer failed. Permission issue? Error: {e}")
+                                st.error(f"Transfer failed. Error: {e}")
     else:
         st.info("No tasks are currently at 'Recording Completed' ready for deployment.")
 
@@ -611,7 +598,13 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
         else:
           with st.spinner("⏳ Sending command to Backend Bot..."):
             try:
-              payload = {"url": raw_link, "year": sel_year, "monthNum": int(sel_month.split(" - ")[0]), "chatId": st.secrets.get("TELEGRAM_ADMIN_CHAT_ID", "")}
+              payload = {
+                  "url": raw_link, 
+                  "year": sel_year, 
+                  "monthNum": int(sel_month.split(" - ")[0]), 
+                  "chatId": st.secrets.get("TELEGRAM_ADMIN_CHAT_ID", ""),
+                  "token": st.secrets.get("GAS_ACCESS_TOKEN", "Ameer@Essay@2026")
+              }
               gas_webhook_url = st.secrets.get("GAS_WEBAPP_URL", "")
               if gas_webhook_url:
                   response = requests.post(gas_webhook_url, json=payload, timeout=15)
@@ -680,7 +673,6 @@ if not st.session_state.get("source_file_id"):
         c1, c2 = st.columns([4, 1.2])
         cur_s = task.get("status")
         
-        # Pull specific due date based on user role
         if app_mode == "Translator Mode": due_str = task.get('t_due')
         elif app_mode == "Reviewer Mode": due_str = task.get('r_due')
         else: due_str = task.get('rec_due')
@@ -864,13 +856,25 @@ def _call_gemini(model_name, prompt, schema_type):
   if match: clean_text = match.group(0)
   return json.loads(clean_text)
 
-# --- RECOVERY FELLOWSHIP LITERARY PROMPTS ---
+# --- RECOVERY FELLOWSHIP LITERARY PROMPTS (RESTORED EXACTLY) ---
 def translate_with_ai(english: str, glossary_text: str):
-  prompt = f"""You are a master literary and technical translator between Arabic and English. Specialized expertise in the culture, ethos, and literature of 12-Step recovery fellowships.
-MANDATORY GLOSSARY ENFORCEMENT: Treat provided glossary as inviolable. Document matches in 'glossary_notes'.
+  prompt = f"""You are a master literary and technical translator between Arabic and English, endowed with deep bilingual erudition and extensive literary appreciation in both tongues. Above all, you possess profound, specialized expertise in the culture, ethos, and literature of 12-Step recovery fellowships.
+
+YOUR IDENTITY & PHILOSOPHY:
+- Tone of Fellowship: You convey the core spirit of recovery: humble, compassionate, clinically sound, non-judgmental, and non-moralizing. You write as an experienced fellow speaking to another.
+- Literary Eloquence without Affectation: Your Arabic is fluid, resonant, and natural (فصيحة، رصينة، منسابة بلا تقعر). You respect Arabic rhetoric, avoiding robotic literalism.
+- Pronoun & Context Awareness: Actively resolve pronouns (e.g., "it", "the program") to reflect the correct grammatical gender and cultural noun in Arabic context.
+
+MANDATORY GLOSSARY ENFORCEMENT:
+- You treat the provided recovery glossary as inviolable dogma.
+- Whenever an English recovery term matches the glossary, you MUST use the exact Arabic term provided. Never substitute it with synonyms.
+- Document every matched term transparently in 'glossary_notes'.
+
 OFFICIAL GLOSSARY:
 {glossary_text}
-Translate English Source: "{english}"
+
+Translate:
+English Source: "{english}"
 """
   for model_name in get_fallback_models():
     for attempt in range(MAX_RETRIES_PER_MODEL):
@@ -882,13 +886,19 @@ Translate English Source: "{english}"
   return {"arabic_translation": "", "glossary_notes": "⚠ Error"}
 
 def review_with_ai(english: str, arabic: str, glossary_text: str):
-  prompt = f"""You are a senior bilingual literary editor and a renowned 12-Step recovery literature specialist.
-CRITERIA: 1. Spiritual & Emotional Integrity. 2. Narrative Flow. 3. Strict Terminology Audit (correct missing glossary terms).
+  prompt = f"""You are a senior bilingual literary editor and a renowned 12-Step recovery literature specialist. You master the rhetoric of both Arabic and English, with acute sensitivity to fellowship semantics.
+
+YOUR EDITORIAL CRITERIA:
+1. Spiritual & Emotional Integrity: Ensure the Arabic translation captures the exact nuance of the original English—neither diluting its psychological gravity nor turning it into moralistic preaching.
+2. Narrative Flow & Arabic Idiom: Ensure sentences flow naturally with proper Arabic syntax, punctuation, and rhythm. Eliminate clunky translative traces.
+3. Strict Terminology Audit: Verify that recovery concepts strictly adhere to the official glossary. If a term misses the specific fellowship consensus, correct it to the exact glossary equivalent and explain the recovery rationale in 'reasoning'.
+
 OFFICIAL GLOSSARY:
 {glossary_text}
+
 Review this pair:
-English: "{english}"
-Arabic: "{arabic}"
+English Source: "{english}"
+Original Arabic: "{arabic}"
 """
   for model_name in get_fallback_models():
     for attempt in range(MAX_RETRIES_PER_MODEL):
@@ -903,7 +913,23 @@ def translate_batch_with_fallback(batch_segments, glossary_text):
   if not GENAI_AVAILABLE or not get_api_key_list():
     return [translate_with_ai(s.get("english", ""), glossary_text) for s in batch_segments]
   input_payload = "\n\n".join([f"ID: {s.get('id', 0)}\nText: {s.get('english', '')}" for s in batch_segments])
-  prompt = f"12-Step Recovery batch translator. Mandatory Glossary usage.\nGLOSSARY:\n{glossary_text}\nSegments:\n{input_payload}"
+  prompt = f"""You are a master literary and technical translator between Arabic and English, endowed with deep bilingual erudition. Above all, you possess profound, specialized expertise in the culture, ethos, and literature of 12-Step recovery fellowships.
+
+YOUR IDENTITY & PHILOSOPHY:
+- Tone of Fellowship: You convey the core spirit of recovery: humble, compassionate, clinically sound, non-judgmental, and non-moralizing. You write as an experienced fellow speaking to another.
+- Literary Eloquence without Affectation: Your Arabic is fluid, resonant, and natural (فصيحة، رصينة، منسابة بلا تقعر). You respect Arabic rhetoric, avoiding robotic literalism.
+- Pronoun & Context Awareness: Actively resolve pronouns (e.g., "it", "the program") to reflect the correct grammatical gender and cultural noun in Arabic context.
+
+MANDATORY GLOSSARY ENFORCEMENT:
+- You treat the provided recovery glossary as inviolable dogma.
+- Whenever an English recovery term matches the glossary, you MUST use the exact Arabic term provided. Never substitute it with synonyms.
+- In 'glossary_notes', explicitly list every glossary term matched and applied (e.g., "recovery -> تعافي"). If none, write "None".
+
+OFFICIAL GLOSSARY:
+{glossary_text}
+
+Segments to Translate:
+{input_payload}"""
   for model_name in get_fallback_models():
     for attempt in range(2):
       try:
@@ -922,7 +948,19 @@ def review_batch_with_fallback(batch_segments, glossary_text):
   if not GENAI_AVAILABLE or not get_api_key_list():
     return [review_with_ai(s.get("english", ""), s.get("arabic", ""), glossary_text) for s in batch_segments]
   input_payload = "\n\n".join([f"ID: {s.get('id', 0)}\nEnglish: {s.get('english', '')}\nArabic: {s.get('arabic', '')}" for s in batch_segments])
-  prompt = f"12-Step Recovery Editor. Mandatory Glossary audit. Assign 'perfect', 'minor_edits', 'major_rewrite'.\nGLOSSARY:\n{glossary_text}\nPairs:\n{input_payload}"
+  prompt = f"""You are a senior bilingual literary editor and a renowned 12-Step recovery literature specialist. You master the rhetoric of both Arabic and English, with acute sensitivity to fellowship semantics.
+
+YOUR EDITORIAL CRITERIA FOR THIS BATCH:
+1. Spiritual & Emotional Integrity: Ensure the Arabic translation captures the exact nuance of the original English—neither diluting its psychological gravity nor turning it into moralistic preaching.
+2. Narrative Flow & Arabic Idiom: Ensure sentences flow naturally with proper Arabic syntax, punctuation, and rhythm. Eliminate clunky translative traces.
+3. Strict Terminology Audit: Verify that recovery concepts strictly adhere to the official glossary. If a term misses the specific fellowship consensus, correct it to the exact glossary equivalent and explain the recovery rationale in 'reasoning'.
+4. Status Assignment: 'perfect' (no edits needed), 'minor_edits' (small grammar/term corrections), 'major_rewrite' (missed core meaning or severely awkward).
+
+OFFICIAL GLOSSARY:
+{glossary_text}
+
+Pairs to Review:
+{input_payload}"""
   for model_name in get_fallback_models():
     for attempt in range(2):
       try:
@@ -987,7 +1025,8 @@ def upload_audio_to_drive(uploaded_file, doc_name, parent_folder_id):
     payload = {
         "action": "upload_audio", "parent_folder_id": parent_folder_id,
         "file_name": f"{re.sub(r'[\\/*?:<>]', '', doc_name).strip()}.wav", "mime_type": "audio/wav",
-        "file_base64": base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
+        "file_base64": base64.b64encode(uploaded_file.getvalue()).decode('utf-8'),
+        "token": st.secrets.get("GAS_ACCESS_TOKEN", "Ameer@Essay@2026")
     }
     response = requests.post(gas_url, json=payload).json()
     return response.get("webViewLink") if response.get("status") == "success" else None
@@ -1146,7 +1185,7 @@ if not st.session_state.get("processed_data"):
             progress_bar.progress((idx + 1) / len(rev_batches))
         else:
           segments = smart_align(paras)
-          normal_segs = [s for s in segments if s.get("english") != "[MISSING ENGLISH SOURCE]" and s.get("arabic") != "[MISSING ARABIC TRANSLATION]"]
+          normal_segs = [s for s in segments if s.get("english") != "[MISSING ENGLISH SOURCE]" and s.get("arabic"] != "[MISSING ARABIC TRANSLATION]"]
           batches = [normal_segs[i : i + BATCH_SIZE] for i in range(0, len(normal_segs), BATCH_SIZE)]
           for idx, batch in enumerate(batches):
             ai_results = review_batch_with_fallback(batch, glossary_data)
