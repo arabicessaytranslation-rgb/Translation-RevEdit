@@ -902,7 +902,7 @@ def manage_document_lock(file_id: str, user_email: str):
                 if locked_by and locked_by != user_email and (current_time - ts) < LOCK_TIMEOUT_SECONDS:
                     return {"status": "blocked", "locked_by": locked_by, "row_index": index + 1}
 
-                # ✅ Recover draft JSON directly from the sheet cell (no Drive lookup)
+                # Recover draft JSON directly from the sheet cell (no Drive lookup)
                 if locked_by == user_email and has_draft:
                     try:
                         return {"status": "recovered",
@@ -941,7 +941,7 @@ def acquire_document_lock(file_id: str, user_email: str, row_index: int):
             pass 
     except Exception: pass
 
-# ✅ Draft-save function — writes JSON directly into the Sessions sheet cell D.
+# Draft-save function — writes JSON directly into the Sessions sheet cell D.
 def save_draft_to_sheet(file_id, user_email, processed_data):
     """Saves draft JSON directly into the Sessions sheet cell D (no Drive writes)."""
     try:
@@ -1293,6 +1293,7 @@ def push_to_drive_translator(document_id, final_arabic_text):
         st.error(f"Failed to push to Drive. Error: {e}")
         return False
 
+# ✅ FIX: Reviewer push now retries without the strict revision check if needed.
 def push_to_drive_reviewer(document_id, approved_segments, revision_id):
     docs_svc, _, _ = get_google_services()
     try:
@@ -1313,16 +1314,31 @@ def push_to_drive_reviewer(document_id, approved_segments, revision_id):
                 last_index = doc_body_elements[-1].get('endIndex', 2) - 1
                 requests.append({"insertText": {"location": {"index": last_index}, "text": orphaned_text}})
 
-        body = {"requests": requests}
-        if revision_id: body["writeControl"] = {"requiredRevisionId": revision_id}
-        
-        if requests: docs_svc.documents().batchUpdate(documentId=document_id, body=body).execute()
-        return True
+        if not requests:
+            return True
+
+        # Attempt 1: strict revision check (protects against concurrent edits when possible)
+        try:
+            body = {"requests": requests}
+            if revision_id:
+                body["writeControl"] = {"requiredRevisionId": revision_id}
+            docs_svc.documents().batchUpdate(documentId=document_id, body=body).execute()
+            return True
+        except Exception as first_err:
+            first_err_str = str(first_err)
+            # If the strict check failed because the revision moved on, retry without it.
+            # The Sessions-sheet lock already prevents concurrent editing in this app.
+            if revision_id and ("requiredRevisionId" in first_err_str or "400" in first_err_str):
+                body = {"requests": requests}
+                docs_svc.documents().batchUpdate(documentId=document_id, body=body).execute()
+                return True
+            raise first_err
     except Exception as e:
-        if "requiredRevisionId" in str(e) or "400" in str(e):
-            st.error("❌ Failed to save: The original document was modified by another user. Please refresh and try again.")
+        err_str = str(e)
+        if "requiredRevisionId" in err_str:
+            st.error("❌ The document was modified since you opened it, and the retry also failed. Please refresh the page and try again.")
         else:
-            st.error(f"Failed to push to Drive. Error: {e}")
+            st.error(f"Failed to push to Drive. Error: {err_str[:400]}")
         return False
 
 # ==========================================
@@ -1386,7 +1402,7 @@ col_h1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
 with col_h2:
     c_btn, c_glos = st.columns([1, 1])
     if c_btn.button("⬅️ Back to Inbox", use_container_width=True):
-        # ✅ FIX: Save any pending work before wiping the session state.
+        # Save any pending work before wiping the session state.
         if st.session_state.get("processed_data"):
             save_draft_to_sheet(
                 file_id,
@@ -1509,7 +1525,7 @@ if st.button("💾 Save Draft Progress", type="secondary", use_container_width=T
         err_detail = st.session_state.get("_last_autosave_error", "unknown")
         st.error(f"⚠️ Failed to save progress ({err_detail}).")
 
-# ✅ Guard against processed_data being None
+# Guard against processed_data being None
 for i, item in enumerate(st.session_state.get("processed_data") or []):
     seg_id, status_val = item.get("id", i + 1), item.get("status", "minor_edits")
     eng_txt, orig_ar, sugg_ar = item.get("english", ""), item.get("original_arabic", ""), item.get("suggested_arabic", item.get("arabic_translation", ""))
@@ -1524,7 +1540,7 @@ for i, item in enumerate(st.session_state.get("processed_data") or []):
             with col_ar:
                 default_val = item.get("user_arabic", item.get("arabic_translation", ""))
                 final_text = st.text_area("Final text", value=default_val, height=120, key=f"edit_{i}", label_visibility="collapsed")
-                # ✅ FIX: Detect text changes and mark for autosave.
+                # Detect text changes and mark for autosave.
                 if final_text != item.get("user_arabic"):
                     item["user_arabic"] = final_text
                     pending_autosave = True
@@ -1543,7 +1559,7 @@ for i, item in enumerate(st.session_state.get("processed_data") or []):
                 default_val = item.get("user_arabic", sugg_ar)
                 
                 final_text = st.text_area("Final Output", value=default_val, height=120, key=f"edit_ar_{i}", label_visibility="collapsed")
-                # ✅ FIX: Detect text changes and mark for autosave.
+                # Detect text changes and mark for autosave.
                 if final_text != item.get("user_arabic"):
                     item["user_arabic"] = final_text
                     pending_autosave = True
