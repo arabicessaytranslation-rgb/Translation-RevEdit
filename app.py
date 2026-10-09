@@ -189,15 +189,12 @@ def update_assignment_team(doc_id, new_t_email=None, new_r_email=None, new_rec_e
         for task in assignments:
             if task.get("doc_id") == doc_id:
                 row_idx = task.get('row_index')
-                
                 current_t = task.get("translator")
                 current_r = task.get("reviewer")
                 current_rec = task.get("recorder")
-                
                 final_t = new_t_email if new_t_email is not None else current_t
                 final_r = new_r_email if new_r_email is not None else current_r
                 final_rec = new_rec_email if new_rec_email is not None else current_rec
-
                 body = {"values": [[final_t, final_r, final_rec]]}
                 sheets_service.spreadsheets().values().update(
                     spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
@@ -807,10 +804,8 @@ if GENAI_AVAILABLE:
     keys_data = st.secrets.get("GEMINI_API_KEYS")
     
     if keys_data:
-        # إذا كانت المفاتيح مكتوبة كقائمة في الإعدادات: ["key1", "key2"]
         if isinstance(keys_data, list):
             keys_list = keys_data
-        # إذا كانت المفاتيح مكتوبة كنص مفصول بفواصل: "key1,key2"
         elif isinstance(keys_data, str):
             keys_list = keys_data.split(",")
         else:
@@ -902,7 +897,6 @@ def manage_document_lock(file_id: str, user_email: str):
                 if locked_by and locked_by != user_email and (current_time - ts) < LOCK_TIMEOUT_SECONDS:
                     return {"status": "blocked", "locked_by": locked_by, "row_index": index + 1}
 
-                # Recover draft JSON directly from the sheet cell (no Drive lookup)
                 if locked_by == user_email and has_draft:
                     try:
                         return {"status": "recovered",
@@ -941,12 +935,10 @@ def acquire_document_lock(file_id: str, user_email: str, row_index: int):
             pass 
     except Exception: pass
 
-# Draft-save function — writes JSON directly into the Sessions sheet cell D.
 def save_draft_to_sheet(file_id, user_email, processed_data):
     """Saves draft JSON directly into the Sessions sheet cell D (no Drive writes)."""
     try:
         json_data = json.dumps(processed_data, ensure_ascii=False)
-        # Google Sheets cell hard-limit: 50,000 chars. Guard with margin.
         if len(json_data) > 49000:
             st.session_state["_last_autosave_error"] = (
                 f"Draft too large for a Sheets cell ({len(json_data)} chars)."
@@ -979,7 +971,6 @@ def release_document_lock(file_id, user_email):
                 body={"values": [["", "", "", ""]]}
             ).execute()
         except Exception: pass
-    # No Drive file to delete — drafts live in the sheet cell.
 
 @st.cache_data(ttl=3600)
 def fetch_glossary():
@@ -1033,8 +1024,6 @@ def _call_gemini(model_name, prompt, schema_type):
         raise Exception("❌ API keys missing. Check GEMINI_API_KEYS in secrets.")
         
     last_error = None
-    
-    # Shuffle the client pool to distribute API load evenly
     random.shuffle(gemini_clients)
     
     for active_client in gemini_clients:
@@ -1057,7 +1046,7 @@ def _call_gemini(model_name, prompt, schema_type):
             err_str = str(e).lower()
             if any(kw in err_str for kw in RETRYABLE_KEYWORDS):
                 last_error = e
-                continue # Retry with the next key in the pool
+                continue
             else:
                 raise e
                 
@@ -1293,8 +1282,8 @@ def push_to_drive_translator(document_id, final_arabic_text):
         st.error(f"Failed to push to Drive. Error: {e}")
         return False
 
-# ✅ FIX: Reviewer push now re-fetches the current doc and re-matches segments by content.
 def push_to_drive_reviewer(document_id, approved_segments, revision_id):
+    """Pushes reviewer-approved text. Re-matches by content to survive external edits."""
     docs_svc, _, _ = get_google_services()
     try:
         # --- Step 1: Fetch the CURRENT document (fresh indexes) ---
@@ -1317,10 +1306,9 @@ def push_to_drive_reviewer(document_id, approved_segments, revision_id):
         else:
             all_paras.extend(sweep(doc))
 
-        # Current Arabic paragraphs with fresh indexes
         current_ar = [p for p in all_paras if re.search(r"[\u0600-\u06FF]", p.get("text", "")) and p.get("start") is not None and p.get("end") is not None]
 
-        # --- Step 2: Match approved positional segments to current Arabic paragraphs by text ---
+        # --- Step 2: Match approved positional segments by text ---
         positional_segs = [seg for seg in approved_segments if seg.get("ar_start") is not None and seg.get("ar_end") is not None]
         orphaned_segs = [seg for seg in approved_segments if seg.get("ar_start") is None]
 
@@ -1340,14 +1328,14 @@ def push_to_drive_reviewer(document_id, approved_segments, revision_id):
             else:
                 unmatched_segs.append(seg)
 
-        # --- Step 3: Build delete+insert requests (descending order) ---
+        # --- Step 3: Delete + insert requests (descending index order) ---
         matched.sort(key=lambda r: r["start"], reverse=True)
         requests = []
         for m in matched:
             requests.append({"deleteContentRange": {"range": {"startIndex": m["start"], "endIndex": m["end"]}}})
             requests.append({"insertText": {"location": {"index": m["start"]}, "text": m["final"] + "\n"}})
 
-        # --- Step 4: Orphaned and unmatched segments appended at the end ---
+        # --- Step 4: Append orphans + unmatched at end ---
         tail_segments = orphaned_segs + unmatched_segs
         if tail_segments:
             tail_text = "\n\n--- Appended Translations ---\n\n" + "\n\n".join([seg.get("final_arabic", "") for seg in tail_segments]) + "\n"
@@ -1442,7 +1430,7 @@ col_h1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
 with col_h2:
     c_btn, c_glos = st.columns([1, 1])
     if c_btn.button("⬅️ Back to Inbox", use_container_width=True):
-        # Save any pending work before wiping the session state.
+        # Save pending work before wiping session state
         if st.session_state.get("processed_data"):
             save_draft_to_sheet(
                 file_id,
@@ -1559,4 +1547,114 @@ approved_count, finalized_data, pending_autosave = 0, [], False
 st.divider()
 
 if st.button("💾 Save Draft Progress", type="secondary", use_container_width=True):
-    if save_draft_to_sheet
+    if save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("processed_data")):
+        st.toast("✅ Progress saved successfully!", icon="💾")
+    else:
+        err_detail = st.session_state.get("_last_autosave_error", "unknown")
+        st.error(f"⚠️ Failed to save progress ({err_detail}).")
+
+for i, item in enumerate(st.session_state.get("processed_data") or []):
+    seg_id, status_val = item.get("id", i + 1), item.get("status", "minor_edits")
+    eng_txt, orig_ar, sugg_ar = item.get("english", ""), item.get("original_arabic", ""), item.get("suggested_arabic", item.get("arabic_translation", ""))
+
+    with st.container(border=True):
+        if app_mode == "Translator Mode":
+            st.markdown(f"### Segment {seg_id}")
+            col_en, col_ar = st.columns(2)
+            with col_en:
+                st.info(html.escape(eng_txt))
+                if item.get("glossary_notes"): st.caption(f"💡 **Glossary Matched:** {html.escape(item.get('glossary_notes'))}")
+            with col_ar:
+                default_val = item.get("user_arabic", item.get("arabic_translation", ""))
+                final_text = st.text_area("Final text", value=default_val, height=120, key=f"edit_{i}", label_visibility="collapsed")
+                if final_text != item.get("user_arabic"):
+                    item["user_arabic"] = final_text
+                    pending_autosave = True
+                
+                violations = check_glossary_violations(eng_txt, final_text, glossary_dict)
+                if violations:
+                    st.error("⚠️ **Glossary Violation:** " + " | ".join([f"`{html.escape(en)}` ⟵ `{html.escape(ar)}`" for en, ar in violations]))
+        else:
+            color = "🟢" if status_val == "perfect" else ("🟡" if status_val == "minor_edits" else "🔴")
+            st.markdown(f"### Segment {seg_id} | Status: {color} {status_val.upper()}")
+            col_en, col_ar = st.columns(2)
+            with col_en: st.info(html.escape(eng_txt))
+            with col_ar:
+                st.markdown(generate_html_diff(orig_ar, sugg_ar), unsafe_allow_html=True)
+                with st.expander("💡 View AI Reasoning & Glossary Audit"): st.markdown(html.escape(item.get("reasoning", item.get("glossary_notes", "No reasoning provided."))))
+                default_val = item.get("user_arabic", sugg_ar)
+                
+                final_text = st.text_area("Final Output", value=default_val, height=120, key=f"edit_ar_{i}", label_visibility="collapsed")
+                if final_text != item.get("user_arabic"):
+                    item["user_arabic"] = final_text
+                    pending_autosave = True
+
+                violations = check_glossary_violations(eng_txt, final_text, glossary_dict)
+                if violations:
+                    st.error("⚠️ **Glossary Violation:** " + " | ".join([f"`{html.escape(en)}` ⟵ `{html.escape(ar)}`" for en, ar in violations]))
+
+        chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{i}", value=item.get("is_approved", False))
+        if chk != item.get("is_approved"): 
+            item["is_approved"] = chk
+            pending_autosave = True 
+            
+        if chk:
+            approved_count += 1
+            if app_mode == "Translator Mode":
+                finalized_data.append(final_text)
+            else:
+                finalized_data.append({
+                    "final_arabic": final_text,
+                    "ar_start": item.get("ar_start"),
+                    "ar_end": item.get("ar_end"),
+                    "original_arabic": item.get("original_arabic", ""),
+                })
+
+if pending_autosave:
+    if save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("processed_data")):
+        st.toast("✅ Edits auto-saved", icon="💾")
+
+# --- SUBMISSION LOGIC ---
+st.divider()
+total_segments = len(st.session_state.get("processed_data") or [])
+st.write(f"### **Approved Segments: {approved_count} / {total_segments}**")
+
+if approved_count == total_segments and total_segments > 0:
+    st.success("🎉 All segments approved! Final review before pushing.")
+    if "review_unlocked" not in st.session_state: st.session_state["review_unlocked"] = False
+    
+    if not st.session_state["review_unlocked"]:
+        st.error("🚨 **CRITICAL STEP:** Please verify the narrative flow before finalizing.")
+        if st.button("👀 I confirm the final text is correct", use_container_width=True):
+            st.session_state["review_unlocked"] = True
+            st.rerun()
+    else:
+        if st.button("🚀 Push to Drive & Conclude Stage", type="primary", use_container_width=True):
+            with st.spinner("Processing Drive updates and concluding workflow..."):
+                if app_mode == "Translator Mode":
+                    ar_compiled = "\n\n".join([str(item) for item in finalized_data])
+                    success = push_to_drive_translator(file_id, ar_compiled)
+                    if success:
+                        r_email = task.get("reviewer", "")
+                        if task.get("translator") == r_email and r_email != "": new_status = STATUS_REV_COMPLETED
+                        elif r_email != "": new_status = STATUS_REV_ASSIGNED
+                        else: new_status = STATUS_TRANS_COMPLETED
+                        update_assignment_status(file_id, new_status, reset_timer=True)
+                else:
+                    if is_bypass_task:
+                        ar_compiled = "\n\n".join([item.get("final_arabic", "") if isinstance(item, dict) else str(item) for item in finalized_data])
+                        success = push_to_drive_translator(file_id, ar_compiled)
+                    else:
+                        success = push_to_drive_reviewer(file_id, finalized_data, st.session_state.get("doc_revision_id"))
+
+                    if success:
+                        rec_email = task.get("recorder", "")
+                        new_status = STATUS_REC_ASSIGNED if rec_email else STATUS_REC_PENDING
+                        update_assignment_status(file_id, new_status, reset_timer=True)
+
+                if success:
+                    release_document_lock(file_id, st.session_state.get("user_email"))
+                    st.session_state["active_task"] = None; st.session_state["source_file_id"] = None
+                    st.session_state["processed_data"] = None; st.session_state["review_unlocked"] = False
+                    st.balloons(); st.success("Task stage completed successfully!")
+                    time.sleep(2); st.rerun()
