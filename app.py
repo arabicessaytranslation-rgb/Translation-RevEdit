@@ -599,26 +599,31 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
       sel_month = c_month.selectbox("Month:", months)
 
       if st.button("🚀 Trigger Preparation Bot", type="primary", width="stretch"):
-        if not raw_link: st.error("❌ Please enter folder link.")
+        if not raw_link: 
+            st.error("❌ Please enter folder link.")
         else:
-          with st.spinner("⏳ Sending command to Backend Bot..."):
-            try:
-              payload = {
-                  "url": raw_link, 
-                  "year": sel_year, 
-                  "monthNum": int(sel_month.split(" - ")[0]), 
-                  "chatId": st.secrets.get("TELEGRAM_ADMIN_CHAT_ID", ""),
-                  "token": st.secrets.get("GAS_ACCESS_TOKEN", "Ameer@Essay@2026")
-              }
-              gas_webhook_url = st.secrets.get("GAS_WEBAPP_URL", "")
-              if gas_webhook_url:
+          gas_webhook_url = st.secrets.get("GAS_WEBAPP_URL", "")
+          gas_token = st.secrets.get("GAS_ACCESS_TOKEN")
+          
+          if not gas_webhook_url or not gas_token:
+              st.error("❌ Missing required GAS Webhook URL or Access Token in Streamlit Secrets.")
+          else:
+              with st.spinner("⏳ Sending command to Backend Bot..."):
+                try:
+                  payload = {
+                      "url": raw_link, 
+                      "year": sel_year, 
+                      "monthNum": int(sel_month.split(" - ")[0]), 
+                      "chatId": st.secrets.get("TELEGRAM_ADMIN_CHAT_ID", ""),
+                      "token": gas_token
+                  }
                   response = requests.post(gas_webhook_url, json=payload, timeout=15)
                   if response.status_code == 200 and response.json().get("status") == "success":
                       st.success(f"✅ {response.json().get('message')}")
                   else:
                       st.error(f"⚠️ Error: {response.json().get('message', 'Unknown API Error')}")
-            except Exception as e:
-              st.error(f"Connection Error: {e}")
+                except Exception as e:
+                  st.error(f"Connection Error: {e}")
 
     st.divider()
     st.subheader("Live Terminology Editor")
@@ -886,8 +891,11 @@ English Source: "{english}"
       try:
         parsed = _call_gemini(model_name, prompt, TranslationResult)
         return {"arabic_translation": parsed.get("arabic_translation", ""), "glossary_notes": parsed.get("glossary_notes", "")}
-      except Exception as e:
-        if _is_retryable(str(e)): _backoff_sleep(attempt)
+     except Exception as e:
+        if _is_retryable(str(e)):
+          _backoff_sleep(attempt)
+        else:
+          break
   return {"arabic_translation": "", "glossary_notes": "⚠ Error"}
 
 def review_with_ai(english: str, arabic: str, glossary_text: str):
@@ -1026,16 +1034,21 @@ def extract_text_from_drive(file_id: str, is_retry=False):
 def upload_audio_to_drive(uploaded_file, doc_name, parent_folder_id):
   try:
     gas_url = st.secrets.get("GAS_WEBAPP_URL")
-    if not gas_url: return None
+    gas_token = st.secrets.get("GAS_ACCESS_TOKEN")
+    
+    if not gas_url or not gas_token: 
+        return None
+        
     payload = {
         "action": "upload_audio", "parent_folder_id": parent_folder_id,
         "file_name": f"{re.sub(r'[\\/*?:<>]', '', doc_name).strip()}.wav", "mime_type": "audio/wav",
         "file_base64": base64.b64encode(uploaded_file.getvalue()).decode('utf-8'),
-        "token": st.secrets.get("GAS_ACCESS_TOKEN", "Ameer@Essay@2026")
+        "token": gas_token
     }
     response = requests.post(gas_url, json=payload).json()
     return response.get("webViewLink") if response.get("status") == "success" else None
-  except Exception: return None
+  except Exception: 
+    return None
 
 def smart_align(paras):
     arabic_paras, english_paras = [], []
