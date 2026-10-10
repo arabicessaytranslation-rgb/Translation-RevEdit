@@ -1153,23 +1153,65 @@ def extract_text_from_drive(file_id: str, is_retry=False):
     return None
 
 def upload_audio_to_drive(uploaded_file, doc_name, parent_folder_id):
-  try:
-    gas_url = st.secrets.get("GAS_WEBAPP_URL")
-    gas_token = st.secrets.get("GAS_ACCESS_TOKEN")
-    
-    if not gas_url or not gas_token: 
-        return None
+    try:
+        gas_url = st.secrets.get("GAS_WEBAPP_URL")
+        gas_token = st.secrets.get("GAS_ACCESS_TOKEN")
+        cc_api_key = st.secrets.get("CLOUDCONVERT_API_KEY") 
         
-    payload = {
-        "action": "upload_audio", "parent_folder_id": parent_folder_id,
-        "file_name": f"{re.sub(r'[\\/*?:<>]', '', doc_name).strip()}.wav", "mime_type": "audio/wav",
-        "file_base64": base64.b64encode(uploaded_file.getvalue()).decode('utf-8'),
-        "token": gas_token
-    }
-    response = requests.post(gas_url, json=payload).json()
-    return response.get("webViewLink") if response.get("status") == "success" else None
-  except Exception: 
-    return None
+        if not gas_url or not gas_token: 
+            return None
+            
+        file_name_clean = re.sub(r'[\\/*?:<>]', '', doc_name).strip()
+        file_ext = uploaded_file.name.split('.')[-1].lower() if hasattr(uploaded_file, 'name') and '.' in uploaded_file.name else 'wav'
+        file_bytes = uploaded_file.getvalue()
+        mime_type = "audio/wav" if file_ext == "wav" else "audio/mpeg"
+
+        # --- CloudConvert API Engine (Transforms Non-MP3 to MP3 on the fly) ---
+        if cc_api_key and file_ext != "mp3":
+            headers = {"Authorization": f"Bearer {cc_api_key}"}
+            job_payload = {
+                "tasks": {
+                    "import-task": {"operation": "import/upload"},
+                    "convert-task": {"operation": "convert", "input": "import-task", "output_format": "mp3"},
+                    "export-task": {"operation": "export/url", "input": "convert-task"}
+                }
+            }
+            # 1. Create Conversion Job
+            res = requests.post("https://api.cloudconvert.com/v2/jobs", json=job_payload, headers=headers).json()
+            job_data = res.get("data", {})
+            
+            import_task = next((t for t in job_data.get("tasks", []) if t["name"] == "import-task"), None)
+            if import_task and "result" in import_task:
+                upload_url = import_task["result"]["form"]["url"]
+                upload_params = import_task["result"]["form"]["parameters"]
+                
+                # 2. Upload the Raw Audio (e.g. mic recording) to CloudConvert Server
+                requests.post(upload_url, data=upload_params, files={'file': (f"audio.{file_ext}", file_bytes)})
+                
+                # 3. Wait Synchronously for the MP3 encoding to finish
+                wait_res = requests.get(f"https://sync.api.cloudconvert.com/v2/jobs/{job_data['id']}", headers=headers).json()
+                
+                export_task = next((t for t in wait_res.get("data", {}).get("tasks", []) if t["name"] == "export-task"), None)
+                if export_task and "result" in export_task and export_task["result"].get("files"):
+                    # 4. Download the new MP3 file into memory
+                    mp3_url = export_task["result"]["files"][0]["url"]
+                    file_bytes = requests.get(mp3_url).content
+                    file_ext = "mp3"
+                    mime_type = "audio/mpeg"
+            
+        # --- Final Push to Google Apps Script Webhook ---
+        payload = {
+            "action": "upload_audio", "parent_folder_id": parent_folder_id,
+            "file_name": f"{file_name_clean}.{file_ext}", 
+            "mime_type": mime_type,
+            "file_base64": base64.b64encode(file_bytes).decode('utf-8'),
+            "token": gas_token
+        }
+        response = requests.post(gas_url, json=payload).json()
+        return response.get("webViewLink") if response.get("status") == "success" else None
+    except Exception as e: 
+        print(f"Audio upload error: {e}")
+        return None
 
 def smart_align(paras):
     arabic_paras, english_paras = [], []
@@ -1245,7 +1287,7 @@ if app_mode == "Recorder Mode":
         if final_audio:
             st.audio(final_audio)
             if st.button("🚀 Upload & Complete Task", type="primary", width="stretch"):
-                with st.spinner("Uploading..."):
+                with st.spinner("Processing & Uploading... (this may take a moment if converting formats)"):
                     file_link = upload_audio_to_drive(final_audio, task.get("doc_name"), st.session_state.get("active_task_parent_folder", ""))
                     if file_link:
                         update_assignment_audio_link(file_id, file_link)
