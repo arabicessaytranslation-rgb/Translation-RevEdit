@@ -28,7 +28,7 @@ except ImportError:
 # 1. CONFIGURATION, SECRETS & CUSTOM CSS
 # ==========================================
 st.set_page_config(
-    page_title="12-Step AI Suite: Workflow Portal",
+    page_title="Arabic Essay Service Coordinator Hub",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -306,7 +306,7 @@ def login_screen():
               if password == admin_password:
                   st.session_state.update({
                       "authenticated": True, "user_email": email, "user_role": "admin",
-                      "user_name": "System Admin", "app_mode": "God Mode"
+                      "user_name": "System Admin", "app_mode": "Coordinator Hub"
                   })
                   st.rerun()
               else:
@@ -318,10 +318,9 @@ def login_screen():
                 if user_data.get("status", "").lower() != "active":
                   st.error("Account suspended. Please contact the coordinator.")
                 else:
-                  role = user_data.get("role")
                   st.session_state.update({
-                      "authenticated": True, "user_email": email, "user_role": role,
-                      "user_name": user_data.get("name"), "app_mode": f"{role.capitalize()} Mode"
+                      "authenticated": True, "user_email": email, "user_role": user_data.get("role"),
+                      "user_name": user_data.get("name"), "app_mode": "Volunteer Dashboard"
                   })
                   st.rerun()
               else:
@@ -338,11 +337,11 @@ if "active_task" not in st.session_state: st.session_state["active_task"] = None
 if "admin_last_refresh" not in st.session_state: st.session_state["admin_last_refresh"] = 0
 
 # ==========================================
-# 3. GOD MODE (ADMIN DASHBOARD)
+# 3. COORDINATOR HUB (ADMIN DASHBOARD)
 # ==========================================
-if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("source_file_id"):
+if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_state.get("source_file_id"):
   col1, col2 = st.columns([5, 1])
-  col1.title("⚡ Central Command: God Mode")
+  col1.title("⚡ Arabic Essay Service Coordinator Hub")
   if col2.button("🚪 Logout", type="primary"):
     st.session_state.clear()
     st.rerun()
@@ -369,9 +368,9 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
   # ---------------------------------------------------------
   with tab_pipe:
     with st.expander("➕ Expand to Auto-Dispatch New Edition"):
-      t_active = [e for e, d in vols.items() if d.get("role") == "translator" and d.get("status", "").lower() == "active"]
-      r_active = [e for e, d in vols.items() if d.get("role") == "reviewer" and d.get("status", "").lower() == "active"]
-      rec_active = [e for e, d in vols.items() if d.get("role") == "recorder" and d.get("status", "").lower() == "active"]
+      t_active = [e for e, d in vols.items() if "translator" in d.get("role") and d.get("status", "").lower() == "active"]
+      r_active = [e for e, d in vols.items() if "reviewer" in d.get("role") and d.get("status", "").lower() == "active"]
+      rec_active = [e for e, d in vols.items() if "recorder" in d.get("role") and d.get("status", "").lower() == "active"]
 
       try:
         folder_res = drive_service.files().list(q="mimeType='application/vnd.google-apps.folder' and trashed=false", fields="files(id, name)").execute()
@@ -536,9 +535,9 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
             with st.popover("⚙️ Override & Reassign", width="stretch"):
               new_s = st.selectbox("Force Stage:", ALL_STATUSES, index=ALL_STATUSES.index(t.get("status")), key=f"s_{d_id}")
               
-              t_opts = [""] + [e for e, d in vols.items() if d.get("role") == "translator" and d.get("status", "").lower() == "active"]
-              r_opts = [""] + [e for e, d in vols.items() if d.get("role") == "reviewer" and d.get("status", "").lower() == "active"]
-              rec_opts = [""] + [e for e, d in vols.items() if d.get("role") == "recorder" and d.get("status", "").lower() == "active"]
+              t_opts = [""] + [e for e, d in vols.items() if "translator" in d.get("role") and d.get("status", "").lower() == "active"]
+              r_opts = [""] + [e for e, d in vols.items() if "reviewer" in d.get("role") and d.get("status", "").lower() == "active"]
+              rec_opts = [""] + [e for e, d in vols.items() if "recorder" in d.get("role") and d.get("status", "").lower() == "active"]
               
               new_t = st.selectbox("Translator:", t_opts, index=t_opts.index(t.get("translator")) if t.get("translator") in t_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"t_{d_id}")
               new_r = st.selectbox("Reviewer:", r_opts, index=r_opts.index(t.get("reviewer")) if t.get("reviewer") in r_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"r_{d_id}")
@@ -620,7 +619,11 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
       edited_vol = st.data_editor(
           df_vol, num_rows="dynamic", use_container_width=True,
           column_config={
-              "Role": st.column_config.SelectboxColumn("Role", options=["translator", "reviewer", "recorder"], required=True),
+              "Role": st.column_config.SelectboxColumn("Role", options=[
+                  "translator", "reviewer", "recorder", 
+                  "translator, reviewer", "reviewer, recorder", 
+                  "translator, recorder", "translator, reviewer, recorder"
+              ], required=True),
               "Status": st.column_config.SelectboxColumn("Status", options=["Active", "Suspended"], required=True),
           },
       )
@@ -642,7 +645,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
             try:
               msg = EmailMessage()
               msg.set_content(f"12-Step Translation Project Update:\n\n{broadcast_message}")
-              msg["Subject"] = f"[12-Step Admin] {broadcast_subject}"
+              msg["Subject"] = f"[Coordinator Hub] {broadcast_subject}"
               msg["From"] = st.secrets.get("SMTP_EMAIL", "admin@localhost")
               msg["To"] = st.secrets.get("SMTP_EMAIL", "admin@localhost")
               msg["Bcc"] = ", ".join(active_emails)
@@ -762,33 +765,31 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
 # ==========================================
 # 4. USER INBOX & TASK DELEGATION
 # ==========================================
-if not st.session_state.get("source_file_id"):
+if not st.session_state.get("source_file_id") and st.session_state.get("app_mode") != "Coordinator Hub":
   col_t, col_l = st.columns([5, 1])
-  col_t.title("⚙ 12-Step AI Suite")
+  col_t.title("⚙ Arabic Essay Service Portal")
   if col_l.button("🚪 Logout", width="stretch"):
     st.session_state.clear()
     st.rerun()
 
-  st.subheader(f"👋 Welcome, {st.session_state.get('user_name')} | Role: {st.session_state.get('user_role', '').capitalize()}")
+  st.subheader(f"👋 Welcome, {st.session_state.get('user_name')}")
   st.markdown("---")
   st.markdown("### 📬 Your Task Queue")
   
   assignments = fetch_assignments()
   my_tasks = []
   
+  # Dynamic Workspace Routing (Ignores global role, focuses on active task phase)
+  usr_email = st.session_state.get("user_email")
   for task in assignments:
     t_status = task.get("status")
-    app_mode = st.session_state.get("app_mode")
-    usr_email = st.session_state.get("user_email")
     
-    if app_mode == "Translator Mode" and task.get("translator") == usr_email and t_status in [STATUS_TRANS_ASSIGNED, STATUS_TRANS_STARTED]:
-        my_tasks.append(task)
-    # Added STATUS_TRANS_COMPLETED to catch pending review tasks
-    elif app_mode == "Reviewer Mode" and task.get("reviewer") == usr_email and t_status in [STATUS_TRANS_COMPLETED, STATUS_REV_ASSIGNED, STATUS_REV_STARTED]:
-        my_tasks.append(task)
-    # Added STATUS_REC_PENDING to catch pending recorder tasks
-    elif app_mode == "Recorder Mode" and task.get("recorder") == usr_email and t_status in [STATUS_REC_PENDING, STATUS_REC_ASSIGNED, STATUS_REC_STARTED]:
-        my_tasks.append(task)
+    if task.get("translator") == usr_email and t_status in [STATUS_TRANS_ASSIGNED, STATUS_TRANS_STARTED]:
+        my_tasks.append({**task, "task_mode": "Translator Mode"})
+    elif task.get("reviewer") == usr_email and t_status in [STATUS_TRANS_COMPLETED, STATUS_REV_ASSIGNED, STATUS_REV_STARTED]:
+        my_tasks.append({**task, "task_mode": "Reviewer Mode"})
+    elif task.get("recorder") == usr_email and t_status in [STATUS_REC_PENDING, STATUS_REC_ASSIGNED, STATUS_REC_STARTED]:
+        my_tasks.append({**task, "task_mode": "Recorder Mode"})
 
   if not my_tasks:
     st.success("🎉 You have no pending tasks in your queue. Great job!")
@@ -797,24 +798,26 @@ if not st.session_state.get("source_file_id"):
       with st.container(border=True):
         c1, c2 = st.columns([4, 1.2])
         cur_s = task.get("status")
+        task_mode = task.get("task_mode")
         
-        if app_mode == "Translator Mode": due_str = task.get('t_due')
-        elif app_mode == "Reviewer Mode": due_str = task.get('r_due')
+        if task_mode == "Translator Mode": due_str = task.get('t_due')
+        elif task_mode == "Reviewer Mode": due_str = task.get('r_due')
         else: due_str = task.get('rec_due')
         
-        badge = "🟠" if "Assigned" in cur_s else "🟡"
+        badge = "🟠" if "Assigned" in cur_s else ("🟡" if "Started" in cur_s else "⏳")
         with c1:
           st.markdown(f"### 📄 **[{task.get('doc_name')}](https://docs.google.com/document/d/{task.get('doc_id')}/edit)**")
           st.caption(f"Current Stage: `{badge} {cur_s}` | **Phase Deadline:** `{due_str if due_str else 'N/A'}`")
         with c2:
           st.write("")
           btn_text = "🔄 Continue Working" if "Started" in cur_s else "🚀 Start Work"
-        with c2:
-          st.write("")
           if st.button(btn_text, key=f"start_{task.get('doc_id')}", type="primary", width="stretch"):
             if cur_s in [STATUS_TRANS_ASSIGNED]: update_assignment_status(task.get("doc_id"), STATUS_TRANS_STARTED)
             elif cur_s in [STATUS_TRANS_COMPLETED, STATUS_REV_ASSIGNED]: update_assignment_status(task.get("doc_id"), STATUS_REV_STARTED)
             elif cur_s in [STATUS_REC_PENDING, STATUS_REC_ASSIGNED]: update_assignment_status(task.get("doc_id"), STATUS_REC_STARTED)
+            
+            # Switch the app into the correct mode for this specific task
+            st.session_state["app_mode"] = task_mode
             st.session_state["active_task"] = task
             st.session_state["source_file_id"] = task.get("doc_id")
             st.rerun()
@@ -1180,7 +1183,6 @@ def upload_audio_to_drive(uploaded_file, doc_name, parent_folder_id):
                     "export-task": {"operation": "export/url", "input": "convert-task"}
                 }
             }
-            # 1. Create Conversion Job
             res = requests.post("https://api.cloudconvert.com/v2/jobs", json=job_payload, headers=headers).json()
             job_data = res.get("data", {})
             
@@ -1189,15 +1191,11 @@ def upload_audio_to_drive(uploaded_file, doc_name, parent_folder_id):
                 upload_url = import_task["result"]["form"]["url"]
                 upload_params = import_task["result"]["form"]["parameters"]
                 
-                # 2. Upload the Raw Audio (e.g. mic recording) to CloudConvert Server
                 requests.post(upload_url, data=upload_params, files={'file': (f"audio.{file_ext}", file_bytes)})
-                
-                # 3. Wait Synchronously for the MP3 encoding to finish
                 wait_res = requests.get(f"https://sync.api.cloudconvert.com/v2/jobs/{job_data['id']}", headers=headers).json()
                 
                 export_task = next((t for t in wait_res.get("data", {}).get("tasks", []) if t["name"] == "export-task"), None)
                 if export_task and "result" in export_task and export_task["result"].get("files"):
-                    # 4. Download the new MP3 file into memory
                     mp3_url = export_task["result"]["files"][0]["url"]
                     file_bytes = requests.get(mp3_url).content
                     file_ext = "mp3"
@@ -1261,13 +1259,14 @@ def push_to_drive_reviewer(file_id, finalized_data):
 # ==========================================
 # 6. ACTIVE WORKSPACE
 # ==========================================
+app_mode = st.session_state.get("app_mode")
 task = st.session_state.get("active_task")
+
 if not task:
   st.session_state["source_file_id"] = None
   st.rerun()
 
 file_id = task.get("doc_id")
-app_mode = st.session_state.get("app_mode")
 
 # ---------------------------------------------------------
 # RECORDER WORKSPACE
@@ -1276,7 +1275,7 @@ if app_mode == "Recorder Mode":
     c1, c2 = st.columns([5, 1])
     c1.markdown(f"## 🎙️ Recording Studio: `{task.get('doc_name')}`")
     if c2.button("⬅️ Back to Inbox", width="stretch"):
-        st.session_state.update({"active_task": None, "source_file_id": None}); st.rerun()
+        st.session_state.update({"active_task": None, "source_file_id": None, "app_mode": "Volunteer Dashboard"}); st.rerun()
     st.markdown(f"[🔗 Open Original Document](https://docs.google.com/document/d/{file_id}/edit)")
     
     paras = extract_text_from_drive(file_id)
@@ -1297,11 +1296,10 @@ if app_mode == "Recorder Mode":
                         update_assignment_audio_link(file_id, file_link)
                         update_assignment_status(file_id, STATUS_REC_COMPLETED)
                         
-                        # System Notification (Recorder -> Admin)
                         admin_mail = st.secrets.get("ADMIN_EMAIL", "")
-                        send_system_email(admin_mail, f"🎙️ Audio Ready: {task.get('doc_name')}", f"Hello,\n\n{st.session_state.get('user_name')} has successfully uploaded the audio for '{task.get('doc_name')}'.\n\nIt is now ready for deployment in the God Mode pipeline.")
+                        send_system_email(admin_mail, f"🎙️ Audio Ready: {task.get('doc_name')}", f"Hello,\n\n{st.session_state.get('user_name')} has successfully uploaded the audio for '{task.get('doc_name')}'.\n\nIt is now ready for deployment in the Coordinator Hub.")
                         
-                        st.session_state.update({"active_task": None, "source_file_id": None})
+                        st.session_state.update({"active_task": None, "source_file_id": None, "app_mode": "Volunteer Dashboard"})
                         st.rerun()
     st.stop()
 
@@ -1314,7 +1312,7 @@ c1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
 with c2:
   b_col, g_col = st.columns([1, 1])
   if b_col.button("⬅️ Back", width="stretch"):
-    st.session_state.update({"active_task": None, "source_file_id": None, "processed_data": None}); st.rerun()
+    st.session_state.update({"active_task": None, "source_file_id": None, "processed_data": None, "app_mode": "Volunteer Dashboard"}); st.rerun()
   if glossary_term_count > 0: g_col.success(f"📖 Glossary: {glossary_term_count} terms")
   else: g_col.warning("⚠️ Glossary: Not Loaded")
 
@@ -1434,18 +1432,25 @@ if approved_count == total_segments and total_segments > 0:
       with st.spinner("Processing Drive updates..."):
         success = push_to_drive_translator(file_id, finalized_data) if (app_mode == "Translator Mode" or is_bypass_task) else push_to_drive_reviewer(file_id, finalized_data)
         if success:
-          # --- BUG FIX: Fetch fresh data from sheet to catch any mid-session Admin overrides ---
+          # --- BUG FIX: Fetch fresh data to prevent race conditions ---
           fresh_assignments = fetch_assignments()
           fresh_task = next((t for t in fresh_assignments if t.get("doc_id") == file_id), task)
           
+          t_email = fresh_task.get("translator", "")
           r_email = fresh_task.get("reviewer", "")
           rec_email = fresh_task.get("recorder", "")
           
-          # System Notification (Automated Baton Pass)
+          # --- Smart Baton Pass (Handles Super Volunteers) ---
           if app_mode == "Translator Mode": 
-              new_status = STATUS_REV_COMPLETED if fresh_task.get("translator") == r_email and r_email else (STATUS_REV_ASSIGNED if r_email else STATUS_TRANS_COMPLETED)
-              if new_status == STATUS_REV_ASSIGNED:
-                  send_system_email(r_email, f"🟢 New Review Task: {fresh_task.get('doc_name')}", f"Hello,\n\nThe translation for '{fresh_task.get('doc_name')}' is complete! It is now in your queue for Review.\n\nPlease log in to the portal to begin.")
+              if r_email == t_email and r_email != "":
+                  # Multi-Role Bypass: The Translator is the Reviewer. Skip straight to Recording.
+                  new_status = STATUS_REC_ASSIGNED if rec_email else STATUS_REC_PENDING
+                  if new_status == STATUS_REC_ASSIGNED:
+                      send_system_email(rec_email, f"🟢 New Recording Task: {fresh_task.get('doc_name')}", f"Hello,\n\nThe text for '{fresh_task.get('doc_name')}' is finalized! It is now ready for Audio Recording.\n\nPlease log in to the portal to begin.")
+              else:
+                  new_status = STATUS_REV_ASSIGNED if r_email else STATUS_TRANS_COMPLETED
+                  if new_status == STATUS_REV_ASSIGNED:
+                      send_system_email(r_email, f"🟢 New Review Task: {fresh_task.get('doc_name')}", f"Hello,\n\nThe translation for '{fresh_task.get('doc_name')}' is complete! It is now in your queue for Review.\n\nPlease log in to the portal to begin.")
           else: 
               new_status = STATUS_REC_ASSIGNED if rec_email else STATUS_REC_PENDING
               if new_status == STATUS_REC_ASSIGNED:
@@ -1453,5 +1458,5 @@ if approved_count == total_segments and total_segments > 0:
           
           update_assignment_status(file_id, new_status)
           release_document_lock(st.session_state.get("session_row_index"))
-          st.session_state.update({"active_task": None, "source_file_id": None, "processed_data": None, "review_unlocked": False})
+          st.session_state.update({"active_task": None, "source_file_id": None, "processed_data": None, "review_unlocked": False, "app_mode": "Volunteer Dashboard"})
           st.rerun()
