@@ -720,7 +720,7 @@ if not st.session_state.get("source_file_id"):
         
         badge = "🟠" if "Assigned" in cur_s else "🟡"
         with c1:
-          st.markdown(f"### 📄 **{task.get('doc_name')}**")
+          st.markdown(f"### 📄 **[{task.get('doc_name')}](https://docs.google.com/document/d/{task.get('doc_id')}/edit)**")
           st.caption(f"Current Stage: `{badge} {cur_s}` | **Phase Deadline:** `{due_str if due_str else 'N/A'}`")
         with c2:
           st.write("")
