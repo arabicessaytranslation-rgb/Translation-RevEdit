@@ -138,7 +138,6 @@ RETRYABLE_KEYWORDS = ("503", "500", "high demand", "429", "timeout", "Quota")
 # ==========================================
 # 2. GOOGLE SERVICES & AUTHENTICATION
 # ==========================================
-# REMOVED @st.cache_resource TO FIX SEGMENTATION FAULT
 def get_google_services():
   try:
     creds_dict = dict(st.secrets["gcp_service_account"])
@@ -387,7 +386,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                               word_count = len(text_str.split())
                               doc_stats.append({'id': d['id'], 'name': d['name'], 'wc': word_count})
                               
-                              # ADDED: Explicit memory cleanup to prevent container OOM limit crashes
+                              # Explicit memory cleanup to prevent container OOM limit crashes
                               del document
                               gc.collect()
                           except:
@@ -644,6 +643,20 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
     except Exception as e:
       st.error(f"Error fetching glossary: {e}")
 
+    st.divider()
+    st.subheader("🧹 Emergency Session Reset")
+    if st.button("⚠️ Force Clear All Active Sessions", type="primary"):
+      try:
+        sheets_service.spreadsheets().values().clear(
+            spreadsheetId=GLOSSARY_SPREADSHEET_ID, range="'Sessions'!A2:D"
+        ).execute()
+        st.session_state.clear()
+        st.success("All locks and sessions have been purged!")
+        time.sleep(1)
+        st.rerun()
+      except Exception as e:
+        st.error(f"Failed to reset sessions: {e}")
+
   st.stop()
 
 # ==========================================
@@ -891,7 +904,7 @@ English Source: "{english}"
       try:
         parsed = _call_gemini(model_name, prompt, TranslationResult)
         return {"arabic_translation": parsed.get("arabic_translation", ""), "glossary_notes": parsed.get("glossary_notes", "")}
-     except Exception as e:
+      except Exception as e:
         if _is_retryable(str(e)):
           _backoff_sleep(attempt)
         else:
@@ -919,7 +932,10 @@ Original Arabic: "{arabic}"
         parsed = _call_gemini(model_name, prompt, ReviewResult)
         return {"status": parsed.get("status", "minor_edits"), "suggested_arabic": parsed.get("suggested_arabic", arabic), "reasoning": parsed.get("reasoning", "")}
       except Exception as e:
-        if _is_retryable(str(e)): _backoff_sleep(attempt)
+        if _is_retryable(str(e)):
+          _backoff_sleep(attempt)
+        else:
+          break
   return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "⚠ Error"}
 
 def translate_batch_with_fallback(batch_segments, glossary_text):
@@ -950,7 +966,10 @@ Segments to Translate:
         items = parsed.get("items", [])
         if len(items) == len(batch_segments): return items
       except Exception as e:
-        if _is_retryable(str(e)): _backoff_sleep(attempt)
+        if _is_retryable(str(e)):
+          _backoff_sleep(attempt)
+        else:
+          break
   results = []
   for s in batch_segments:
     res = translate_with_ai(s.get("english", ""), glossary_text)
@@ -981,7 +1000,10 @@ Pairs to Review:
         items = parsed.get("items", [])
         if len(items) == len(batch_segments): return items
       except Exception as e:
-        if _is_retryable(str(e)): _backoff_sleep(attempt)
+        if _is_retryable(str(e)):
+          _backoff_sleep(attempt)
+        else:
+          break
   results = []
   for s in batch_segments:
     res = review_with_ai(s.get("english", ""), s.get("arabic", ""), glossary_text)
@@ -1027,7 +1049,6 @@ def extract_text_from_drive(file_id: str, is_retry=False):
     return None
   except Exception as e:
     if ("Broken pipe" in str(e) or "Errno 32" in str(e)) and not is_retry:
-      # REMOVED get_google_services.clear() due to removed cache decorator
       return extract_text_from_drive(file_id, True)
     return None
 
