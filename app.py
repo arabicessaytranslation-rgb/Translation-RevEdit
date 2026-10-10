@@ -271,22 +271,39 @@ def login_screen():
     with st.container(border=True):
       with st.form("login_form"):
         email = st.text_input("Enter your registered email address:").strip().lower()
+        password = st.text_input("Admin Password (Leave blank if you are a volunteer):", type="password")
+        
         if st.form_submit_button("Access Portal", type="primary", width="stretch"):
-          volunteers = fetch_volunteers()
-          if email in volunteers:
-            user_data = volunteers[email]
-            if user_data.get("status", "").lower() != "active":
-              st.error("Account suspended. Please contact the coordinator.")
-            else:
-              role = user_data.get("role")
-              mode = "God Mode" if role == "admin" else f"{role.capitalize()} Mode"
-              st.session_state.update({
-                  "authenticated": True, "user_email": email, "user_role": role,
-                  "user_name": user_data.get("name"), "app_mode": mode
-              })
-              st.rerun()
+          admin_email = st.secrets.get("ADMIN_EMAIL", "").strip().lower()
+          admin_password = st.secrets.get("ADMIN_PASSWORD", "")
+          
+          # 1. Admin login verification path
+          if admin_email and email == admin_email:
+              if password == admin_password:
+                  st.session_state.update({
+                      "authenticated": True, "user_email": email, "user_role": "admin",
+                      "user_name": "System Admin", "app_mode": "God Mode"
+                  })
+                  st.rerun()
+              else:
+                  st.error("Incorrect Admin Password.")
+                  
+          # 2. Volunteer login path (password-less via sheet verification)
           else:
-            st.error("Email not recognized in the system.")
+              volunteers = fetch_volunteers()
+              if email in volunteers:
+                user_data = volunteers[email]
+                if user_data.get("status", "").lower() != "active":
+                  st.error("Account suspended. Please contact the coordinator.")
+                else:
+                  role = user_data.get("role")
+                  st.session_state.update({
+                      "authenticated": True, "user_email": email, "user_role": role,
+                      "user_name": user_data.get("name"), "app_mode": f"{role.capitalize()} Mode"
+                  })
+                  st.rerun()
+              else:
+                st.error("Email not recognized in the system.")
   return False
 
 if not login_screen():
@@ -330,9 +347,10 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
   # ---------------------------------------------------------
   with tab_pipe:
     with st.expander("➕ Expand to Auto-Dispatch New Edition"):
-      t_active = [e for e, d in vols.items() if d.get("role") in ["translator", "admin"] and d.get("status", "").lower() == "active"]
-      r_active = [e for e, d in vols.items() if d.get("role") in ["reviewer", "admin"] and d.get("status", "").lower() == "active"]
-      rec_active = [e for e, d in vols.items() if d.get("role") in ["recorder", "admin"] and d.get("status", "").lower() == "active"]
+      # Strictly volunteer pools; admin is excluded from task assignments
+      t_active = [e for e, d in vols.items() if d.get("role") == "translator" and d.get("status", "").lower() == "active"]
+      r_active = [e for e, d in vols.items() if d.get("role") == "reviewer" and d.get("status", "").lower() == "active"]
+      rec_active = [e for e, d in vols.items() if d.get("role") == "recorder" and d.get("status", "").lower() == "active"]
 
       try:
         folder_res = drive_service.files().list(q="mimeType='application/vnd.google-apps.folder' and trashed=false", fields="files(id, name)").execute()
@@ -547,7 +565,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
       edited_vol = st.data_editor(
           df_vol, num_rows="dynamic", use_container_width=True,
           column_config={
-              "Role": st.column_config.SelectboxColumn("Role", options=["translator", "reviewer", "recorder", "admin"], required=True),
+              "Role": st.column_config.SelectboxColumn("Role", options=["translator", "reviewer", "recorder"], required=True),
               "Status": st.column_config.SelectboxColumn("Status", options=["Active", "Suspended"], required=True),
           },
       )
@@ -879,7 +897,7 @@ def _call_gemini(model_name, prompt, schema_type):
   if match: clean_text = match.group(0)
   return json.loads(clean_text)
 
-# --- RECOVERY FELLOWSHIP LITERARY PROMPTS (RESTORED EXACTLY) ---
+# --- RECOVERY FELLOWSHIP LITERARY PROMPTS ---
 def translate_with_ai(english: str, glossary_text: str):
   prompt = f"""You are a master literary and technical translator between Arabic and English, endowed with deep bilingual erudition and extensive literary appreciation in both tongues. Above all, you possess profound, specialized expertise in the culture, ethos, and literature of 12-Step recovery fellowships.
 
