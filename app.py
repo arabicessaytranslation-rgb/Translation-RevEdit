@@ -136,7 +136,7 @@ MAX_BACKOFF_SECONDS = 15.0
 RETRYABLE_KEYWORDS = ("503", "500", "high demand", "429", "timeout", "Quota")
 
 # ==========================================
-# 2. GOOGLE SERVICES & AUTHENTICATION
+# 2. GOOGLE SERVICES & SYSTEM EMAILS
 # ==========================================
 def get_google_services():
   try:
@@ -159,6 +159,20 @@ def get_google_services():
     return None, None, None
 
 docs_service, drive_service, sheets_service = get_google_services()
+
+def send_system_email(to_email, subject, body):
+    if not to_email: return
+    try:
+        msg = EmailMessage()
+        msg.set_content(body)
+        msg["Subject"] = subject
+        msg["From"] = st.secrets.get("SMTP_EMAIL", "admin@localhost")
+        msg["To"] = to_email
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(st.secrets.get("SMTP_EMAIL"), st.secrets.get("SMTP_PASSWORD"))
+            server.send_message(msg)
+    except Exception as e:
+        print(f"Failed to send email to {to_email}: {e}")
 
 def fetch_volunteers():
   try:
@@ -240,6 +254,17 @@ def update_assignment_status(doc_id, new_status):
       ).execute()
       break
 
+def update_assignment_roles(doc_id, t_email, r_email, rec_email):
+  assignments = fetch_assignments()
+  for task in assignments:
+    if task.get("doc_id") == doc_id:
+      range_name = f"'Assignments'!C{task.get('row_index')}:E{task.get('row_index')}"
+      sheets_service.spreadsheets().values().update(
+          spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=range_name,
+          valueInputOption="USER_ENTERED", body={"values": [[t_email, r_email, rec_email]]},
+      ).execute()
+      break
+
 def update_assignment_audio_link(doc_id, link):
   assignments = fetch_assignments()
   for task in assignments:
@@ -277,7 +302,6 @@ def login_screen():
           admin_email = st.secrets.get("ADMIN_EMAIL", "").strip().lower()
           admin_password = st.secrets.get("ADMIN_PASSWORD", "")
           
-          # 1. Admin login verification path
           if admin_email and email == admin_email:
               if password == admin_password:
                   st.session_state.update({
@@ -287,8 +311,6 @@ def login_screen():
                   st.rerun()
               else:
                   st.error("Incorrect Admin Password.")
-                  
-          # 2. Volunteer login path (password-less via sheet verification)
           else:
               volunteers = fetch_volunteers()
               if email in volunteers:
@@ -347,7 +369,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
   # ---------------------------------------------------------
   with tab_pipe:
     with st.expander("➕ Expand to Auto-Dispatch New Edition"):
-      # Strictly volunteer pools; admin is excluded from task assignments
       t_active = [e for e, d in vols.items() if d.get("role") == "translator" and d.get("status", "").lower() == "active"]
       r_active = [e for e, d in vols.items() if d.get("role") == "reviewer" and d.get("status", "").lower() == "active"]
       rec_active = [e for e, d in vols.items() if d.get("role") == "recorder" and d.get("status", "").lower() == "active"]
@@ -384,15 +405,22 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
               if not pool_r:
                 st.error("❌ At least one Reviewer must be selected.")
               else:
-                with st.spinner("Analyzing document word counts and balancing workloads..."):
+                with st.spinner("Scanning for new documents and balancing workloads..."):
                   doc_res = drive_service.files().list(q=f"'{month_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false", fields="files(id, name)").execute()
                   docs = doc_res.get("files", [])
                   
+                  existing_tasks = fetch_assignments()
+                  existing_ids = {t.get("doc_id") for t in existing_tasks}
+                  
+                  new_docs = [d for d in docs if d['id'] not in existing_ids]
+                  
                   if not docs:
                       st.warning("No Google Docs found in this folder.")
+                  elif not new_docs:
+                      st.success("✅ All documents in this folder are already assigned in the pipeline. No new tasks to add.")
                   else:
                       doc_stats = []
-                      for d in docs:
+                      for d in new_docs:
                           try:
                               document = docs_service.documents().get(documentId=d['id']).execute()
                               content = document.get('body', {}).get('content', [])
@@ -404,7 +432,6 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                               word_count = len(text_str.split())
                               doc_stats.append({'id': d['id'], 'name': d['name'], 'wc': word_count})
                               
-                              # Explicit memory cleanup to prevent container OOM limit crashes
                               del document
                               gc.collect()
                           except:
@@ -446,7 +473,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                           init_status = STATUS_TRANS_ASSIGNED if a_t else STATUS_REV_ASSIGNED
                           assign_task_to_sheet(ds['id'], ds['name'], a_t, a_r, a_rec, init_status, s_final, s_t_due, s_r_due, s_rec_due)
                       
-                      st.success(f"Successfully balanced and assigned {len(doc_stats)} articles!")
+                      st.success(f"Successfully integrated and assigned {len(doc_stats)} NEW articles to the active pipeline!")
                       time.sleep(1.5)
                       st.rerun()
           else:
@@ -506,11 +533,34 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
             st.markdown(f"**📄 [{t.get('doc_name')}](https://docs.google.com/document/d/{d_id}/edit)** &nbsp;&nbsp; `{get_status_badge(t.get('status'))}`")
             st.caption(f"**T:** {t_disp}{dl_t} &nbsp;|&nbsp; **R:** {r_disp}{dl_r} &nbsp;|&nbsp; **REC:** {rec_disp}{dl_rec}")
           with ca:
-            with st.popover("⚙️ Override", width="stretch"):
+            with st.popover("⚙️ Override & Reassign", width="stretch"):
               new_s = st.selectbox("Force Stage:", ALL_STATUSES, index=ALL_STATUSES.index(t.get("status")), key=f"s_{d_id}")
-              if st.button("Save", key=f"b_up_{d_id}", type="primary", width="stretch"):
+              
+              t_opts = [""] + [e for e, d in vols.items() if d.get("role") == "translator" and d.get("status", "").lower() == "active"]
+              r_opts = [""] + [e for e, d in vols.items() if d.get("role") == "reviewer" and d.get("status", "").lower() == "active"]
+              rec_opts = [""] + [e for e, d in vols.items() if d.get("role") == "recorder" and d.get("status", "").lower() == "active"]
+              
+              new_t = st.selectbox("Translator:", t_opts, index=t_opts.index(t.get("translator")) if t.get("translator") in t_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"t_{d_id}")
+              new_r = st.selectbox("Reviewer:", r_opts, index=r_opts.index(t.get("reviewer")) if t.get("reviewer") in r_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"r_{d_id}")
+              new_rec = st.selectbox("Recorder:", rec_opts, index=rec_opts.index(t.get("recorder")) if t.get("recorder") in rec_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"rec_{d_id}")
+
+              c_save, c_unlock = st.columns(2)
+              if c_save.button("💾 Save", key=f"b_up_{d_id}", type="primary", width="stretch"):
                 update_assignment_status(d_id, new_s)
+                update_assignment_roles(d_id, new_t, new_r, new_rec)
                 st.rerun()
+              
+              def admin_force_unlock(doc_id):
+                  try:
+                      res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
+                      for index, row in enumerate(res.get("values", [])):
+                          if len(row) > 0 and row[0] == doc_id:
+                              sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{index + 1}:D{index + 1}", valueInputOption="USER_ENTERED", body={"values": [["", "", "", ""]]}).execute()
+                  except Exception: pass
+
+              if c_unlock.button("🔓 Unlock", key=f"unlock_{d_id}", width="stretch"):
+                admin_force_unlock(d_id)
+                st.success("Session cleared!")
 
     st.divider()
     st.subheader("📤 Final Deployment Desk")
@@ -518,10 +568,17 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
     
     if ready_tasks:
         st.markdown(f"**{len(ready_tasks)} Assets Ready for Final Transfer:**")
+        client_email = st.text_input("📧 CC Client Email (Optional - Leave blank to only notify Admin):")
+        
         for rt in ready_tasks:
             with st.container(border=True):
                 cd1, cd2 = st.columns([4, 1])
                 cd1.markdown(f"📄 **{rt.get('doc_name')}**")
+                
+                qa_links = f"[📝 Review Text](https://docs.google.com/document/d/{rt.get('doc_id')}/edit)"
+                if rt.get("audio_link"): qa_links += f" &nbsp;|&nbsp; [🎧 Listen to Audio]({rt.get('audio_link')})"
+                cd1.caption(f"**QA Check:** {qa_links}")
+                
                 if cd2.button("🚀 Push to Client", key=f"push_{rt.get('doc_id')}", type="primary", width="stretch"):
                     sub_id = extract_id_from_url(sub_link)
                     if not sub_id:
@@ -529,25 +586,23 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                     else:
                         with st.spinner("Copying assets..."):
                             try:
-                                drive_service.files().copy(
-                                    fileId=rt.get("doc_id"), 
-                                    body={'name': f"[Final Arabic] {rt.get('doc_name')}", 'parents': [sub_id]}
-                                ).execute()
-                                
+                                drive_service.files().copy(fileId=rt.get("doc_id"), body={'name': f"[Final Arabic] {rt.get('doc_name')}", 'parents': [sub_id]}).execute()
                                 if rt.get("audio_link"):
                                     aud_id = extract_id_from_url(rt.get("audio_link"))
-                                    if aud_id:
-                                        drive_service.files().copy(
-                                            fileId=aud_id, 
-                                            body={'parents': [sub_id]}
-                                        ).execute()
+                                    if aud_id: drive_service.files().copy(fileId=aud_id, body={'parents': [sub_id]}).execute()
                                 
                                 update_assignment_status(rt.get("doc_id"), STATUS_SUBMITTED)
-                                st.success("Transfer complete!")
-                                time.sleep(1)
+                                
+                                admin_mail = st.secrets.get("ADMIN_EMAIL", "")
+                                msg_body = f"The final translated document and audio for '{rt.get('doc_name')}' have been successfully deployed to the client folder."
+                                send_system_email(admin_mail, f"✅ Deployed: {rt.get('doc_name')}", msg_body)
+                                if client_email: send_system_email(client_email, f"New 12-Step Literature Available: {rt.get('doc_name')}", msg_body)
+                                
+                                st.success("Transfer complete & notifications sent!")
+                                time.sleep(1.5)
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"Transfer failed. Error: {e}")
+                                st.error(f"Transfer failed: {e}")
     else:
         st.info("No tasks are currently at 'Recording Completed' ready for deployment.")
 
@@ -600,6 +655,33 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
               st.error(f"Failed to send email. Error: {e}")
         else:
           st.warning("No active volunteers found.")
+          
+    st.divider()
+    with st.expander("🚨 Automated Overdue Nudges"):
+        st.write("Click below to scan the active pipeline and email anyone who has missed their phase deadline.")
+        if st.button("🔔 Send Overdue Reminders", type="primary"):
+            with st.spinner("Scanning deadlines..."):
+                active = [t for t in fetch_assignments() if t.get("status") not in [STATUS_SUBMITTED, STATUS_REC_COMPLETED]]
+                reminders_sent = 0
+                today = datetime.today()
+                
+                for t in active:
+                    status = t.get("status", "")
+                    due_str, target_email, phase = "", "", ""
+                    
+                    if "Translation" in status: due_str, target_email, phase = t.get("t_due"), t.get("translator"), "Translation"
+                    elif "Reviewer" in status: due_str, target_email, phase = t.get("r_due"), t.get("reviewer"), "Review"
+                    elif "Recording" in status: due_str, target_email, phase = t.get("rec_due"), t.get("recorder"), "Recording"
+                    
+                    if due_str and target_email:
+                        try:
+                            due_date = datetime.strptime(f"{due_str} {today.year}", "%b %d %Y")
+                            if due_date < today:
+                                send_system_email(target_email, f"Urgent: '{t.get('doc_name')}' is Overdue", f"Hello,\n\nOur records indicate that the {phase} phase for '{t.get('doc_name')}' was due on {due_str}.\n\nPlease log in to the portal to complete this task as soon as possible so the next volunteer can begin.")
+                                reminders_sent += 1
+                        except Exception: pass
+                        
+                st.success(f"Scanned pipeline. Sent {reminders_sent} overdue reminders!")
 
   # ---------------------------------------------------------
   # TAB 3: SYSTEM TOOLS
@@ -1168,6 +1250,11 @@ if app_mode == "Recorder Mode":
                     if file_link:
                         update_assignment_audio_link(file_id, file_link)
                         update_assignment_status(file_id, STATUS_REC_COMPLETED)
+                        
+                        # System Notification (Recorder -> Admin)
+                        admin_mail = st.secrets.get("ADMIN_EMAIL", "")
+                        send_system_email(admin_mail, f"🎙️ Audio Ready: {task.get('doc_name')}", f"Hello,\n\n{st.session_state.get('user_name')} has successfully uploaded the audio for '{task.get('doc_name')}'.\n\nIt is now ready for deployment in the God Mode pipeline.")
+                        
                         st.session_state.update({"active_task": None, "source_file_id": None})
                         st.rerun()
     st.stop()
@@ -1302,8 +1389,18 @@ if approved_count == total_segments and total_segments > 0:
         success = push_to_drive_translator(file_id, finalized_data) if (app_mode == "Translator Mode" or is_bypass_task) else push_to_drive_reviewer(file_id, finalized_data)
         if success:
           r_email = task.get("reviewer", "")
-          if app_mode == "Translator Mode": new_status = STATUS_REV_COMPLETED if task.get("translator") == r_email and r_email else (STATUS_REV_ASSIGNED if r_email else STATUS_TRANS_COMPLETED)
-          else: new_status = STATUS_REC_ASSIGNED if task.get("recorder", "") else STATUS_REC_PENDING
+          rec_email = task.get("recorder", "")
+          
+          # System Notification (Automated Baton Pass)
+          if app_mode == "Translator Mode": 
+              new_status = STATUS_REV_COMPLETED if task.get("translator") == r_email and r_email else (STATUS_REV_ASSIGNED if r_email else STATUS_TRANS_COMPLETED)
+              if new_status == STATUS_REV_ASSIGNED:
+                  send_system_email(r_email, f"🟢 New Review Task: {task.get('doc_name')}", f"Hello,\n\nThe translation for '{task.get('doc_name')}' is complete! It is now in your queue for Review.\n\nPlease log in to the portal to begin.")
+          else: 
+              new_status = STATUS_REC_ASSIGNED if rec_email else STATUS_REC_PENDING
+              if new_status == STATUS_REC_ASSIGNED:
+                  send_system_email(rec_email, f"🟢 New Recording Task: {task.get('doc_name')}", f"Hello,\n\nThe review for '{task.get('doc_name')}' is complete! It is now ready for Audio Recording.\n\nPlease log in to the portal to begin.")
+          
           update_assignment_status(file_id, new_status)
           release_document_lock(st.session_state.get("session_row_index"))
           st.session_state.update({"active_task": None, "source_file_id": None, "processed_data": None, "review_unlocked": False})
