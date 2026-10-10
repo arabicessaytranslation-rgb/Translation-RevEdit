@@ -14,6 +14,7 @@ import pandas as pd
 from pydantic import BaseModel, Field
 import streamlit as st
 import base64
+import gc
 
 # --- Google GenAI SDK ---
 try:
@@ -137,7 +138,7 @@ RETRYABLE_KEYWORDS = ("503", "500", "high demand", "429", "timeout", "Quota")
 # ==========================================
 # 2. GOOGLE SERVICES & AUTHENTICATION
 # ==========================================
-@st.cache_resource(ttl=300)
+# REMOVED @st.cache_resource TO FIX SEGMENTATION FAULT
 def get_google_services():
   try:
     creds_dict = dict(st.secrets["gcp_service_account"])
@@ -271,7 +272,7 @@ def login_screen():
     with st.container(border=True):
       with st.form("login_form"):
         email = st.text_input("Enter your registered email address:").strip().lower()
-        if st.form_submit_button("Access Portal", type="primary", use_container_width=True):
+        if st.form_submit_button("Access Portal", type="primary", width="stretch"):
           volunteers = fetch_volunteers()
           if email in volunteers:
             user_data = volunteers[email]
@@ -362,7 +363,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                 pool_r = st.multiselect("Reviewers (Mandatory):", r_active, format_func=format_vol_label)
                 pool_rec = st.multiselect("Recorders:", rec_active, format_func=format_vol_label)
 
-            if st.button("🔄 Analyze Word Counts & Auto-Assign", type="primary", use_container_width=True):
+            if st.button("🔄 Analyze Word Counts & Auto-Assign", type="primary", width="stretch"):
               if not pool_r:
                 st.error("❌ At least one Reviewer must be selected.")
               else:
@@ -385,6 +386,10 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                                           if 'textRun' in run: text_str += run['textRun'].get('content', '')
                               word_count = len(text_str.split())
                               doc_stats.append({'id': d['id'], 'name': d['name'], 'wc': word_count})
+                              
+                              # ADDED: Explicit memory cleanup to prevent container OOM limit crashes
+                              del document
+                              gc.collect()
                           except:
                               doc_stats.append({'id': d['id'], 'name': d['name'], 'wc': 500})
                       
@@ -484,9 +489,9 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
             st.markdown(f"**📄 [{t.get('doc_name')}](https://docs.google.com/document/d/{d_id}/edit)** &nbsp;&nbsp; `{get_status_badge(t.get('status'))}`")
             st.caption(f"**T:** {t_disp}{dl_t} &nbsp;|&nbsp; **R:** {r_disp}{dl_r} &nbsp;|&nbsp; **REC:** {rec_disp}{dl_rec}")
           with ca:
-            with st.popover("⚙️ Override", use_container_width=True):
+            with st.popover("⚙️ Override", width="stretch"):
               new_s = st.selectbox("Force Stage:", ALL_STATUSES, index=ALL_STATUSES.index(t.get("status")), key=f"s_{d_id}")
-              if st.button("Save", key=f"b_up_{d_id}", type="primary", use_container_width=True):
+              if st.button("Save", key=f"b_up_{d_id}", type="primary", width="stretch"):
                 update_assignment_status(d_id, new_s)
                 st.rerun()
 
@@ -500,7 +505,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
             with st.container(border=True):
                 cd1, cd2 = st.columns([4, 1])
                 cd1.markdown(f"📄 **{rt.get('doc_name')}**")
-                if cd2.button("🚀 Push to Client", key=f"push_{rt.get('doc_id')}", type="primary", use_container_width=True):
+                if cd2.button("🚀 Push to Client", key=f"push_{rt.get('doc_id')}", type="primary", width="stretch"):
                     sub_id = extract_id_from_url(sub_link)
                     if not sub_id:
                         st.error("Please paste a valid Google Drive Folder URL above.")
@@ -593,7 +598,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
                 "7 - July", "8 - August", "9 - September", "10 - October", "11 - November", "12 - December"]
       sel_month = c_month.selectbox("Month:", months)
 
-      if st.button("🚀 Trigger Preparation Bot", type="primary", use_container_width=True):
+      if st.button("🚀 Trigger Preparation Bot", type="primary", width="stretch"):
         if not raw_link: st.error("❌ Please enter folder link.")
         else:
           with st.spinner("⏳ Sending command to Backend Bot..."):
@@ -642,7 +647,7 @@ if st.session_state.get("app_mode") == "God Mode" and not st.session_state.get("
 if not st.session_state.get("source_file_id"):
   col_t, col_l = st.columns([5, 1])
   col_t.title("⚙ 12-Step AI Suite")
-  if col_l.button("🚪 Logout", use_container_width=True):
+  if col_l.button("🚪 Logout", width="stretch"):
     st.session_state.clear()
     st.rerun()
 
@@ -684,7 +689,7 @@ if not st.session_state.get("source_file_id"):
         with c2:
           st.write("")
           btn_text = "🚀 Start Work" if "Assigned" in cur_s else "🔄 Continue Working"
-          if st.button(btn_text, key=f"start_{task.get('doc_id')}", type="primary", use_container_width=True):
+          if st.button(btn_text, key=f"start_{task.get('doc_id')}", type="primary", width="stretch"):
             if cur_s == STATUS_TRANS_ASSIGNED: update_assignment_status(task.get("doc_id"), STATUS_TRANS_STARTED)
             elif cur_s == STATUS_REV_ASSIGNED: update_assignment_status(task.get("doc_id"), STATUS_REV_STARTED)
             elif cur_s == STATUS_REC_ASSIGNED: update_assignment_status(task.get("doc_id"), STATUS_REC_STARTED)
@@ -1014,7 +1019,7 @@ def extract_text_from_drive(file_id: str, is_retry=False):
     return None
   except Exception as e:
     if ("Broken pipe" in str(e) or "Errno 32" in str(e)) and not is_retry:
-      get_google_services.clear()
+      # REMOVED get_google_services.clear() due to removed cache decorator
       return extract_text_from_drive(file_id, True)
     return None
 
@@ -1090,7 +1095,7 @@ app_mode = st.session_state.get("app_mode")
 if app_mode == "Recorder Mode":
     c1, c2 = st.columns([5, 1])
     c1.markdown(f"## 🎙️ Recording Studio: `{task.get('doc_name')}`")
-    if c2.button("⬅️ Back to Inbox", use_container_width=True):
+    if c2.button("⬅️ Back to Inbox", width="stretch"):
         st.session_state.update({"active_task": None, "source_file_id": None}); st.rerun()
     st.markdown(f"[🔗 Open Original Document](https://docs.google.com/document/d/{file_id}/edit)")
     
@@ -1105,7 +1110,7 @@ if app_mode == "Recorder Mode":
         final_audio = recorded_audio or uploaded_audio
         if final_audio:
             st.audio(final_audio)
-            if st.button("🚀 Upload & Complete Task", type="primary", use_container_width=True):
+            if st.button("🚀 Upload & Complete Task", type="primary", width="stretch"):
                 with st.spinner("Uploading..."):
                     file_link = upload_audio_to_drive(final_audio, task.get("doc_name"), st.session_state.get("active_task_parent_folder", ""))
                     if file_link:
@@ -1123,7 +1128,7 @@ c1, c2 = st.columns([4, 2])
 c1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
 with c2:
   b_col, g_col = st.columns([1, 1])
-  if b_col.button("⬅️ Back", use_container_width=True):
+  if b_col.button("⬅️ Back", width="stretch"):
     st.session_state.update({"active_task": None, "source_file_id": None, "processed_data": None}); st.rerun()
   if glossary_term_count > 0: g_col.success(f"📖 Glossary: {glossary_term_count} terms")
   else: g_col.warning("⚠️ Glossary: Not Loaded")
@@ -1240,7 +1245,7 @@ if approved_count == total_segments and total_segments > 0:
     st.error("🚨 **CRITICAL STEP:** Verify narrative flow.")
     if st.button("👀 Confirm final text"): st.session_state["review_unlocked"] = True; st.rerun()
   else:
-    if st.button("🚀 Push to Drive & Conclude", type="primary", use_container_width=True):
+    if st.button("🚀 Push to Drive & Conclude", type="primary", width="stretch"):
       with st.spinner("Processing Drive updates..."):
         success = push_to_drive_translator(file_id, finalized_data) if (app_mode == "Translator Mode" or is_bypass_task) else push_to_drive_reviewer(file_id, finalized_data)
         if success:
