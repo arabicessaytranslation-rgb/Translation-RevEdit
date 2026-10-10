@@ -783,9 +783,11 @@ if not st.session_state.get("source_file_id"):
     
     if app_mode == "Translator Mode" and task.get("translator") == usr_email and t_status in [STATUS_TRANS_ASSIGNED, STATUS_TRANS_STARTED]:
         my_tasks.append(task)
-    elif app_mode == "Reviewer Mode" and task.get("reviewer") == usr_email and t_status in [STATUS_REV_ASSIGNED, STATUS_REV_STARTED]:
+    # Added STATUS_TRANS_COMPLETED to catch pending review tasks
+    elif app_mode == "Reviewer Mode" and task.get("reviewer") == usr_email and t_status in [STATUS_TRANS_COMPLETED, STATUS_REV_ASSIGNED, STATUS_REV_STARTED]:
         my_tasks.append(task)
-    elif app_mode == "Recorder Mode" and task.get("recorder") == usr_email and t_status in [STATUS_REC_ASSIGNED, STATUS_REC_STARTED]:
+    # Added STATUS_REC_PENDING to catch pending recorder tasks
+    elif app_mode == "Recorder Mode" and task.get("recorder") == usr_email and t_status in [STATUS_REC_PENDING, STATUS_REC_ASSIGNED, STATUS_REC_STARTED]:
         my_tasks.append(task)
 
   if not my_tasks:
@@ -806,11 +808,13 @@ if not st.session_state.get("source_file_id"):
           st.caption(f"Current Stage: `{badge} {cur_s}` | **Phase Deadline:** `{due_str if due_str else 'N/A'}`")
         with c2:
           st.write("")
-          btn_text = "🚀 Start Work" if "Assigned" in cur_s else "🔄 Continue Working"
+          btn_text = "🔄 Continue Working" if "Started" in cur_s else "🚀 Start Work"
+        with c2:
+          st.write("")
           if st.button(btn_text, key=f"start_{task.get('doc_id')}", type="primary", width="stretch"):
-            if cur_s == STATUS_TRANS_ASSIGNED: update_assignment_status(task.get("doc_id"), STATUS_TRANS_STARTED)
-            elif cur_s == STATUS_REV_ASSIGNED: update_assignment_status(task.get("doc_id"), STATUS_REV_STARTED)
-            elif cur_s == STATUS_REC_ASSIGNED: update_assignment_status(task.get("doc_id"), STATUS_REC_STARTED)
+            if cur_s in [STATUS_TRANS_ASSIGNED]: update_assignment_status(task.get("doc_id"), STATUS_TRANS_STARTED)
+            elif cur_s in [STATUS_TRANS_COMPLETED, STATUS_REV_ASSIGNED]: update_assignment_status(task.get("doc_id"), STATUS_REV_STARTED)
+            elif cur_s in [STATUS_REC_PENDING, STATUS_REC_ASSIGNED]: update_assignment_status(task.get("doc_id"), STATUS_REC_STARTED)
             st.session_state["active_task"] = task
             st.session_state["source_file_id"] = task.get("doc_id")
             st.rerun()
