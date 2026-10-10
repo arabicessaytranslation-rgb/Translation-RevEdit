@@ -562,6 +562,7 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                 st.success("Session cleared!")
 
     st.divider()
+    st.divider()
     st.subheader("📤 Final Deployment Desk")
     sub_link = st.text_input("🔗 Paste Edition Submission Folder Link (Google Drive):", placeholder="https://drive.google.com/drive/folders/...")
     
@@ -569,6 +570,47 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
         st.markdown(f"**{len(ready_tasks)} Assets Ready for Final Transfer:**")
         client_email = st.text_input("📧 CC Client Email (Optional - Leave blank to only notify Admin):")
         
+        # --- NEW: BATCH DEPLOYMENT BUTTON ---
+        if len(ready_tasks) > 1:
+            if st.button(f"🚀 Deploy ALL {len(ready_tasks)} Ready Assets", type="primary", use_container_width=True):
+                sub_id = extract_id_from_url(sub_link)
+                if not sub_id:
+                    st.error("Please paste a valid Google Drive Folder URL above.")
+                else:
+                    with st.spinner(f"Batch copying {len(ready_tasks)} assets..."):
+                        success_count = 0
+                        deployed_names = []
+                        for rt in ready_tasks:
+                            try:
+                                # Copy Document
+                                drive_service.files().copy(fileId=rt.get("doc_id"), body={'name': f"[Final Arabic] {rt.get('doc_name')}", 'parents': [sub_id]}).execute()
+                                # Copy Audio
+                                if rt.get("audio_link"):
+                                    aud_id = extract_id_from_url(rt.get("audio_link"))
+                                    if aud_id: drive_service.files().copy(fileId=aud_id, body={'parents': [sub_id]}).execute()
+                                
+                                update_assignment_status(rt.get("doc_id"), STATUS_SUBMITTED)
+                                success_count += 1
+                                deployed_names.append(rt.get("doc_name"))
+                            except Exception as e:
+                                st.error(f"Failed to transfer '{rt.get('doc_name')}': {e}")
+                        
+                        # Send 1 Consolidated Email Receipt
+                        if success_count > 0:
+                            admin_mail = st.secrets.get("ADMIN_EMAIL", "")
+                            doc_list = "\n".join([f"- {name}" for name in deployed_names])
+                            msg_body = f"Successfully deployed {success_count} assets to the client folder:\n\n{doc_list}"
+                            
+                            send_system_email(admin_mail, f"✅ Batch Deployed: {success_count} Assets", msg_body)
+                            if client_email: 
+                                send_system_email(client_email, f"New 12-Step Literature Available: {success_count} Assets", msg_body)
+                            
+                            st.success(f"Batch transfer complete! {success_count} assets deployed.")
+                            time.sleep(2)
+                            st.rerun()
+            st.markdown("---")
+        
+        # --- INDIVIDUAL ASSET CARDS (Kept for granular control & QA Links) ---
         for rt in ready_tasks:
             with st.container(border=True):
                 cd1, cd2 = st.columns([4, 1])
@@ -578,7 +620,7 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                 if rt.get("audio_link"): qa_links += f" &nbsp;|&nbsp; [🎧 Listen to Audio]({rt.get('audio_link')})"
                 cd1.caption(f"**QA Check:** {qa_links}")
                 
-                if cd2.button("🚀 Push to Client", key=f"push_{rt.get('doc_id')}", type="primary", width="stretch"):
+                if cd2.button("Push to Client", key=f"push_{rt.get('doc_id')}"):
                     sub_id = extract_id_from_url(sub_link)
                     if not sub_id:
                         st.error("Please paste a valid Google Drive Folder URL above.")
