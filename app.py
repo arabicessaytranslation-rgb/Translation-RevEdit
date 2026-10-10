@@ -1434,18 +1434,22 @@ if approved_count == total_segments and total_segments > 0:
       with st.spinner("Processing Drive updates..."):
         success = push_to_drive_translator(file_id, finalized_data) if (app_mode == "Translator Mode" or is_bypass_task) else push_to_drive_reviewer(file_id, finalized_data)
         if success:
-          r_email = task.get("reviewer", "")
-          rec_email = task.get("recorder", "")
+          # --- BUG FIX: Fetch fresh data from sheet to catch any mid-session Admin overrides ---
+          fresh_assignments = fetch_assignments()
+          fresh_task = next((t for t in fresh_assignments if t.get("doc_id") == file_id), task)
+          
+          r_email = fresh_task.get("reviewer", "")
+          rec_email = fresh_task.get("recorder", "")
           
           # System Notification (Automated Baton Pass)
           if app_mode == "Translator Mode": 
-              new_status = STATUS_REV_COMPLETED if task.get("translator") == r_email and r_email else (STATUS_REV_ASSIGNED if r_email else STATUS_TRANS_COMPLETED)
+              new_status = STATUS_REV_COMPLETED if fresh_task.get("translator") == r_email and r_email else (STATUS_REV_ASSIGNED if r_email else STATUS_TRANS_COMPLETED)
               if new_status == STATUS_REV_ASSIGNED:
-                  send_system_email(r_email, f"🟢 New Review Task: {task.get('doc_name')}", f"Hello,\n\nThe translation for '{task.get('doc_name')}' is complete! It is now in your queue for Review.\n\nPlease log in to the portal to begin.")
+                  send_system_email(r_email, f"🟢 New Review Task: {fresh_task.get('doc_name')}", f"Hello,\n\nThe translation for '{fresh_task.get('doc_name')}' is complete! It is now in your queue for Review.\n\nPlease log in to the portal to begin.")
           else: 
               new_status = STATUS_REC_ASSIGNED if rec_email else STATUS_REC_PENDING
               if new_status == STATUS_REC_ASSIGNED:
-                  send_system_email(rec_email, f"🟢 New Recording Task: {task.get('doc_name')}", f"Hello,\n\nThe review for '{task.get('doc_name')}' is complete! It is now ready for Audio Recording.\n\nPlease log in to the portal to begin.")
+                  send_system_email(rec_email, f"🟢 New Recording Task: {fresh_task.get('doc_name')}", f"Hello,\n\nThe review for '{fresh_task.get('doc_name')}' is complete! It is now ready for Audio Recording.\n\nPlease log in to the portal to begin.")
           
           update_assignment_status(file_id, new_status)
           release_document_lock(st.session_state.get("session_row_index"))
