@@ -562,7 +562,6 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                 st.success("Session cleared!")
 
     st.divider()
-    st.divider()
     st.subheader("📤 Final Deployment Desk")
     sub_link = st.text_input("🔗 Paste Edition Submission Folder Link (Google Drive):", placeholder="https://drive.google.com/drive/folders/...")
     
@@ -570,7 +569,7 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
         st.markdown(f"**{len(ready_tasks)} Assets Ready for Final Transfer:**")
         client_email = st.text_input("📧 CC Client Email (Optional - Leave blank to only notify Admin):")
         
-        # --- NEW: BATCH DEPLOYMENT BUTTON ---
+        # --- BATCH DEPLOYMENT BUTTON ---
         if len(ready_tasks) > 1:
             if st.button(f"🚀 Deploy ALL {len(ready_tasks)} Ready Assets", type="primary", use_container_width=True):
                 sub_id = extract_id_from_url(sub_link)
@@ -582,12 +581,14 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                         deployed_names = []
                         for rt in ready_tasks:
                             try:
-                                # Copy Document
+                                # 1. Copy Document with clean name
                                 drive_service.files().copy(fileId=rt.get("doc_id"), body={'name': f"[Final Arabic] {rt.get('doc_name')}", 'parents': [sub_id]}).execute()
-                                # Copy Audio
+                                
+                                # 2. Copy Audio with clean name
                                 if rt.get("audio_link"):
                                     aud_id = extract_id_from_url(rt.get("audio_link"))
-                                    if aud_id: drive_service.files().copy(fileId=aud_id, body={'parents': [sub_id]}).execute()
+                                    if aud_id: 
+                                        drive_service.files().copy(fileId=aud_id, body={'name': f"[Audio] {rt.get('doc_name')}.mp3", 'parents': [sub_id]}).execute()
                                 
                                 update_assignment_status(rt.get("doc_id"), STATUS_SUBMITTED)
                                 success_count += 1
@@ -610,7 +611,7 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                             st.rerun()
             st.markdown("---")
         
-        # --- INDIVIDUAL ASSET CARDS (Kept for granular control & QA Links) ---
+        # --- INDIVIDUAL ASSET CARDS ---
         for rt in ready_tasks:
             with st.container(border=True):
                 cd1, cd2 = st.columns([4, 1])
@@ -627,10 +628,14 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                     else:
                         with st.spinner("Copying assets..."):
                             try:
+                                # 1. Copy Document
                                 drive_service.files().copy(fileId=rt.get("doc_id"), body={'name': f"[Final Arabic] {rt.get('doc_name')}", 'parents': [sub_id]}).execute()
+                                
+                                # 2. Copy Audio (Fixed Name)
                                 if rt.get("audio_link"):
                                     aud_id = extract_id_from_url(rt.get("audio_link"))
-                                    if aud_id: drive_service.files().copy(fileId=aud_id, body={'parents': [sub_id]}).execute()
+                                    if aud_id: 
+                                        drive_service.files().copy(fileId=aud_id, body={'name': f"[Audio] {rt.get('doc_name')}.mp3", 'parents': [sub_id]}).execute()
                                 
                                 update_assignment_status(rt.get("doc_id"), STATUS_SUBMITTED)
                                 
