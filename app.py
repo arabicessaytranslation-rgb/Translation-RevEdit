@@ -492,8 +492,18 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
 
                                             init_status = STATUS_TRANS_ASSIGNED if a_t else STATUS_REV_ASSIGNED
                                             assign_task_to_sheet(ds['id'], ds['name'], a_t, a_r, a_rec, init_status, s_final, s_t_due, s_r_due, s_rec_due)
+                                            
+                                            # --- AUTOMATED DISPATCH EMAILS ---
+                                            t_n = vols.get(a_t, {}).get("name", "")
+                                            r_n = vols.get(a_r, {}).get("name", "")
+                                            rec_n = vols.get(a_rec, {}).get("name", "")
+                                            
+                                            if a_t:
+                                                send_role_notification(a_t, ds['name'], ds['id'], "Translation", t_n, r_n, rec_n)
+                                            elif a_r:
+                                                send_role_notification(a_r, ds['name'], ds['id'], "Review", t_n, r_n, rec_n)
                                         
-                                        st.success(f"Successfully integrated and assigned {len(doc_stats)} NEW articles to the active pipeline!")
+                                        st.success(f"Successfully integrated, assigned, and emailed the team for {len(doc_stats)} NEW articles!")
                                         time.sleep(1.5)
                                         st.rerun()
                     else:
@@ -1530,23 +1540,34 @@ if approved_count == total_segments and total_segments > 0:
                     r_email = fresh_task.get("reviewer", "")
                     rec_email = fresh_task.get("recorder", "")
                     
-                    # --- Smart Baton Pass (Handles Super Volunteers & Manual Audio) ---
+                    # --- Fetch volunteers so names are available for the baton pass ---
+                    vols = fetch_volunteers()
                     t_n = vols.get(t_email, {}).get("name", "")
                     r_n = vols.get(r_email, {}).get("name", "")
                     rec_n = vols.get(rec_email, {}).get("name", "")
 
                     if app_mode == "Translator Mode": 
                         if r_email == t_email and r_email != "":
+                            # Bypass Review directly to Recording
                             new_status = STATUS_REC_PENDING
                             update_assignment_status(file_id, new_status)
+                            
+                            # Notify Admin of the parked task
+                            admin_mail = st.secrets.get("ADMIN_EMAIL", "")
+                            send_system_email(admin_mail, f"⚠️ Recorder Needed: {fresh_task.get('doc_name')}", f"The Editor phase for '{fresh_task.get('doc_name')}' was bypassed/completed. It is parked at 'Pending Audio Recorder'. Please verify the writer's gender and manually assign the recorder via the Coordinator Hub.")
                         else:
                             new_status = STATUS_REV_ASSIGNED if r_email else STATUS_TRANS_COMPLETED
                             if new_status == STATUS_REV_ASSIGNED:
                                 send_role_notification(r_email, fresh_task.get('doc_name'), file_id, "Review", t_n, r_n, rec_n)
                             update_assignment_status(file_id, new_status)
                     else: 
+                        # Review is complete. Park the task silently for manual audio assignment.
                         new_status = STATUS_REC_PENDING
                         update_assignment_status(file_id, new_status)
+                        
+                        # Notify Admin of the parked task
+                        admin_mail = st.secrets.get("ADMIN_EMAIL", "")
+                        send_system_email(admin_mail, f"⚠️ Recorder Needed: {fresh_task.get('doc_name')}", f"Hello,\n\nThe Editor ({st.session_state.get('user_name')}) has finished '{fresh_task.get('doc_name')}'.\n\nIt is now parked at 'Pending Audio Recorder'. Please log in to the Coordinator Hub, verify the writer's gender, and manually dispatch the correct recorder.")
                         
                     release_document_lock(st.session_state.get("session_row_index"))
                     st.session_state.update({"active_task": None, "source_file_id": None, "processed_data": None, "review_unlocked": False, "app_mode": "Volunteer Dashboard"})
