@@ -129,7 +129,7 @@ ALL_STATUSES = [
     STATUS_REC_COMPLETED, STATUS_SUBMITTED
 ]
 
-BATCH_SIZE = 6
+BATCH_SIZE = 10 # تم زيادتها لتخفيف طلبات الذكاء الاصطناعي
 MAX_RETRIES_PER_MODEL = 3
 BASE_BACKOFF_SECONDS = 2.0
 MAX_BACKOFF_SECONDS = 15.0
@@ -356,6 +356,7 @@ if "source_file_id" not in st.session_state: st.session_state["source_file_id"] 
 if "session_row_index" not in st.session_state: st.session_state["session_row_index"] = None
 if "active_task" not in st.session_state: st.session_state["active_task"] = None
 if "admin_last_refresh" not in st.session_state: st.session_state["admin_last_refresh"] = 0
+if "last_save_time" not in st.session_state: st.session_state["last_save_time"] = time.time() # أضيف المؤقت الزمني
 
 # ==========================================
 # 3. COORDINATOR HUB (ADMIN DASHBOARD)
@@ -997,40 +998,65 @@ def manage_document_lock(file_id: str, user_email: str):
         res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
         rows = res.get("values", [])
         current_time = time.time()
-        target_row_index = max(len(rows) + 1, 2)
         for index, row in enumerate(rows):
             if index == 0: continue
             if len(row) > 0 and row[0] == file_id:
                 locked_by = row[1] if len(row) > 1 else ""
                 ts = float(row[2]) if len(row) > 2 and row[2] else 0
-                saved_json = row[3] if len(row) > 3 else ""
+                backup_file_id = row[3] if len(row) > 3 else ""
+                
                 if locked_by and locked_by != user_email and (current_time - ts) < LOCK_TIMEOUT_SECONDS:
                     return {"status": "blocked", "locked_by": locked_by, "row_index": index + 1}
-                if locked_by == user_email and saved_json:
-                    try: return {"status": "recovered", "data": json.loads(saved_json), "row_index": index + 1}
+                if locked_by == user_email and backup_file_id:
+                    try:
+                        # استرجاع البيانات من ملف الدرايف
+                        request = drive_service.files().get_media(fileId=backup_file_id)
+                        downloaded = io.BytesIO()
+                        from googleapiclient.http import MediaIoBaseDownload
+                        downloader = MediaIoBaseDownload(downloaded, request)
+                        done = False
+                        while done is False:
+                            status, done = downloader.next_chunk()
+                        return {"status": "recovered", "data": json.loads(downloaded.getvalue().decode('utf-8')), "row_index": index + 1}
                     except Exception: pass
                 return {"status": "clear", "row_index": index + 1}
-        return {"status": "clear", "row_index": target_row_index}
+        return {"status": "new"} # تم التعديل لتطبيق حل الـ Append
     except Exception:
-        return {"status": "clear", "row_index": 2}
-
-def acquire_document_lock(file_id: str, user_email: str, row_index: int):
-    try:
-        sheets_service.spreadsheets().values().update(
-            spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}",
-            valueInputOption="USER_ENTERED", body={"values": [[file_id, user_email, str(time.time()), ""]]},
-        ).execute()
-    except Exception: pass
+        return {"status": "new"}
 
 def save_draft_to_sheet(file_id, user_email, row_index, processed_data):
     if not row_index: return
     try:
         json_data = json.dumps(processed_data, ensure_ascii=False)
+        
+        # 1. حفظ البيانات في ملف نصي داخل Google Drive
+        file_metadata = {
+            'name': f"Session_Backup_{file_id}.json",
+            'mimeType': 'application/json',
+            'parents': ['1L-Y3X_THT9aM1lhZD_yiusaeJ3OgeDy1'] # هذا السطر يحل مشكلة سعة التخزين بالكامل
+        }
+        media = io.BytesIO(json_data.encode('utf-8'))
+        from googleapiclient.http import MediaIoBaseUpload
+        media_upload = MediaIoBaseUpload(media, mimetype='application/json')
+        
+        # البحث إذا كان الملف موجوداً مسبقاً لتحديثه
+        query = f"name='Session_Backup_{file_id}.json' and trashed=false"
+        existing_files = drive_service.files().list(q=query, spaces='drive').execute().get('files', [])
+        
+        if existing_files:
+            backup_file_id = existing_files[0]['id']
+            drive_service.files().update(fileId=backup_file_id, media_body=media_upload).execute()
+        else:
+            created_file = drive_service.files().create(body=file_metadata, media_body=media_upload).execute()
+            backup_file_id = created_file.get('id')
+
+        # 2. حفظ رقم هوية ملف النسخة الاحتياطية فقط في جوجل شيتس
         sheets_service.spreadsheets().values().update(
             spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}",
-            valueInputOption="USER_ENTERED", body={"values": [[file_id, user_email, str(time.time()), json_data]]},
+            valueInputOption="USER_ENTERED", body={"values": [[file_id, user_email, str(time.time()), backup_file_id]]},
         ).execute()
-    except Exception: pass
+    except Exception as e:
+        print(f"Error saving to Drive: {e}")
 
 def release_document_lock(row_index):
     if not row_index: return
@@ -1424,14 +1450,26 @@ if not st.session_state.get("processed_data"):
     elif lock["status"] == "recovered":
         st.session_state.update({"session_row_index": lock["row_index"], "processed_data": lock["data"]})
         st.success("♻️ Session Recovered.")
-    elif lock["status"] == "clear":
-        st.session_state["session_row_index"] = lock["row_index"]
-        acquire_document_lock(file_id, st.session_state.get("user_email"), lock["row_index"])
+    else:
+        # استخدام Append لحجز جلسة جديدة وتجنب التصادم
+        append_res = sheets_service.spreadsheets().values().append(
+            spreadsheetId=GLOSSARY_SPREADSHEET_ID, range="'Sessions'!A:D",
+            valueInputOption="USER_ENTERED", insertDataOption="INSERT_ROWS", 
+            body={"values": [[file_id, st.session_state.get("user_email"), str(time.time()), ""]]},
+        ).execute()
+        
+        updated_range = append_res.get('updates', {}).get('updatedRange', '')
+        match = re.search(r'([0-9]+)\$', updated_range)
+        if match:
+            st.session_state["session_row_index"] = int(match.group(1))
+            
         paras = extract_text_from_drive(file_id)
 
         if paras:
             processed_results = []
             progress_bar = st.progress(0)
+            
+            st.info("⏳ جاري تجهيز المقالة عبر الذكاء الاصطناعي، قد يستغرق الأمر دقيقتين، يرجى عدم تحديث الصفحة.") # تنبيه المتطوع
 
             if app_mode == "Translator Mode":
                 batches = [paras[i : i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
@@ -1486,11 +1524,15 @@ if not st.session_state.get("processed_data"):
             st.session_state["processed_data"] = processed_results
             st.rerun()
 
-approved_count, finalized_data, state_modified = 0, [], False
+approved_count, finalized_data, any_state_modified = 0, [], False
 st.divider()
 
-for i, item in enumerate(st.session_state.get("processed_data", [])):
+# دالة رسم الصناديق كـ Fragment لمنع التهنيج
+@st.fragment
+def render_segment(i, item, file_id, app_mode):
     seg_id = item.get("id", i + 1)
+    state_modified = False
+    
     with st.container(border=True):
         if app_mode == "Translator Mode":
             st.markdown(f"### Segment {seg_id}")
@@ -1511,11 +1553,26 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
 
         chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{file_id}_{i}", value=item.get("is_approved", False))
         if chk != item.get("is_approved"): item["is_approved"] = chk; state_modified = True
-        if chk:
-            approved_count += 1
-            finalized_data.append({"final_arabic": final_text, "ar_start": item.get("ar_start"), "ar_end": item.get("ar_end"), "en_start": item.get("en_start")})
+        
+        return chk, final_text, state_modified
 
-if state_modified: save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), st.session_state.get("processed_data"))
+for i, item in enumerate(st.session_state.get("processed_data", [])):
+    chk, final_text, state_modified = render_segment(i, item, file_id, app_mode)
+    
+    if state_modified:
+        any_state_modified = True
+        
+    if chk:
+        approved_count += 1
+        finalized_data.append({"final_arabic": final_text, "ar_start": item.get("ar_start"), "ar_end": item.get("ar_end"), "en_start": item.get("en_start")})
+
+# الحفظ التلقائي الزمني (كل 60 ثانية)
+if any_state_modified:
+    current_time = time.time()
+    time_elapsed = current_time - st.session_state.get("last_save_time", 0)
+    if time_elapsed > 60: 
+        save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), st.session_state.get("processed_data"))
+        st.session_state["last_save_time"] = current_time
 
 st.divider()
 total_segments = len(st.session_state.get("processed_data", []))
