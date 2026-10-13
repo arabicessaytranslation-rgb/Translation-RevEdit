@@ -1497,7 +1497,7 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
             c_en, c_ar = st.columns(2)
             c_en.info(item.get("english", ""))
             if item.get("glossary_notes"): c_en.caption(f"💡 {item.get('glossary_notes')}")
-            final_text = c_ar.text_area("Final text", value=item.get("user_arabic", ""), height=120, key=f"edit_{i}", label_visibility="collapsed")
+            final_text = c_ar.text_area("Final text", value=item.get("user_arabic", ""), height=120, key=f"edit_{file_id}_{i}", label_visibility="collapsed")
             if final_text != item.get("user_arabic"): item["user_arabic"] = final_text; state_modified = True
         else:
             color = "🟢" if item.get("status") == "perfect" else ("🟡" if item.get("status") == "minor_edits" else "🔴")
@@ -1506,10 +1506,10 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
             c_en.info(item.get("english", ""))
             c_ar.markdown(generate_html_diff(item.get("original_arabic", ""), item.get("suggested_arabic", "")), unsafe_allow_html=True)
             c_ar.expander("💡 Reasoning").write(item.get("reasoning", ""))
-            final_text = c_ar.text_area("Final Output", value=item.get("user_arabic", ""), height=120, key=f"edit_ar_{i}", label_visibility="collapsed")
+            final_text = c_ar.text_area("Final Output", value=item.get("user_arabic", ""), height=120, key=f"edit_ar_{file_id}_{i}", label_visibility="collapsed")
             if final_text != item.get("user_arabic"): item["user_arabic"] = final_text; state_modified = True
 
-        chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{i}", value=item.get("is_approved", False))
+        chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{file_id}_{i}", value=item.get("is_approved", False))
         if chk != item.get("is_approved"): item["is_approved"] = chk; state_modified = True
         if chk:
             approved_count += 1
