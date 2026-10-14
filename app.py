@@ -1028,19 +1028,21 @@ def save_draft_to_sheet(file_id, user_email, row_index, processed_data):
     if not row_index: return
     try:
         json_data = json.dumps(processed_data, ensure_ascii=False)
+        folder_id = '1L-Y3X_THT9aM1lhZD_yiusaeJ3OgeDy1' # المجلد الخاص بك
         
         # 1. حفظ البيانات في ملف نصي داخل Google Drive
         file_metadata = {
             'name': f"Session_Backup_{file_id}.json",
             'mimeType': 'application/json',
-            'parents': ['1L-Y3X_THT9aM1lhZD_yiusaeJ3OgeDy1'] # هذا السطر يحل مشكلة سعة التخزين بالكامل
+            'parents': [folder_id] 
         }
         media = io.BytesIO(json_data.encode('utf-8'))
         from googleapiclient.http import MediaIoBaseUpload
         media_upload = MediaIoBaseUpload(media, mimetype='application/json')
         
-        # البحث إذا كان الملف موجوداً مسبقاً لتحديثه
-        query = f"name='Session_Backup_{file_id}.json' and trashed=false"
+        # 🚨 التعديل الجذري هنا: حصر البحث داخل مجلدك فقط
+        query = f"'{folder_id}' in parents and name='Session_Backup_{file_id}.json' and trashed=false"
+        
         existing_files = drive_service.files().list(q=query, spaces='drive').execute().get('files', [])
         
         if existing_files:
@@ -1055,8 +1057,10 @@ def save_draft_to_sheet(file_id, user_email, row_index, processed_data):
             spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}",
             valueInputOption="USER_ENTERED", body={"values": [[file_id, user_email, str(time.time()), backup_file_id]]},
         ).execute()
+        
     except Exception as e:
-        print(f"Error saving to Drive: {e}")
+        # لكشف أي خطأ مخفي في الصلاحيات أو الاتصال (ضروري جداً أثناء الاختبار)
+        st.error(f"Error saving to Drive: {e}")
 
 def release_document_lock(row_index):
     if not row_index: return
