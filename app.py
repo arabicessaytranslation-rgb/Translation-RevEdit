@@ -103,7 +103,8 @@ apply_custom_css()
 GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
 GLOSSARY_RANGE = "'المصطلحات'!A:D"
 GLOSSARY_DATA_RANGE = "'المصطلحات'!C:D"
-SESSIONS_RANGE = "'Sessions'!A:D"
+# تم توسيع النطاق إلى Z لحل مشكلة سعة الخلية
+SESSIONS_RANGE = "'Sessions'!A:Z"
 VOLUNTEERS_RANGE = "'Volunteers'!A:D"
 ASSIGNMENTS_RANGE = "'Assignments'!A:K" 
 
@@ -129,7 +130,7 @@ ALL_STATUSES = [
     STATUS_REC_COMPLETED, STATUS_SUBMITTED
 ]
 
-BATCH_SIZE = 6
+BATCH_SIZE = 10
 MAX_RETRIES_PER_MODEL = 3
 BASE_BACKOFF_SECONDS = 2.0
 MAX_BACKOFF_SECONDS = 15.0
@@ -173,6 +174,27 @@ def send_system_email(to_email, subject, body):
             server.send_message(msg)
     except Exception as e:
         print(f"Failed to send email to {to_email}: {e}")
+
+def send_role_notification(target_email, doc_name, doc_id, role, t_name, r_name, rec_name):
+    portal_url = st.secrets.get("PORTAL_URL", "https://your-app-url.streamlit.app")
+    t_disp = t_name if t_name else "AI Bypass"
+    r_disp = r_name if r_name else "To Be Assigned"
+    rec_disp = rec_name if rec_name else "To Be Assigned (Pending Gender Match)"
+    subject = f"🟢 New {role} Task: {doc_name}"
+    body = f"""Hello,
+
+The text for '{doc_name}' is ready for your phase: {role}.
+
+📋 Team Roster for this Article:
+- Translator: {t_disp}
+- Editor: {r_disp}
+- Audio Recorder: {rec_disp}
+
+🔗 Quick Links:
+- Open the Portal to start working: {portal_url}
+- View the Original Google Doc: https://docs.google.com/document/d/{doc_id}/edit
+"""
+    send_system_email(target_email, subject, body)
 
 def fetch_volunteers():
     try:
@@ -565,7 +587,8 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                                         res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
                                         for index, row in enumerate(res.get("values", [])):
                                             if len(row) > 0 and row[0] == doc_id:
-                                                sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{index + 1}:D{index + 1}", valueInputOption="USER_ENTERED", body={"values": [["", "", "", ""]]}).execute()
+                                                empty_row = [""] * 26
+                                                sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{index + 1}:Z{index + 1}", valueInputOption="USER_ENTERED", body={"values": [empty_row]}).execute()
                                     except Exception: pass
                                 admin_force_unlock(d_id)
                                 st.success("Session cleared!")
@@ -818,7 +841,7 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
         if st.button("⚠️ Force Clear All Active Sessions", type="primary"):
             try:
                 sheets_service.spreadsheets().values().clear(
-                    spreadsheetId=GLOSSARY_SPREADSHEET_ID, range="'Sessions'!A2:D"
+                    spreadsheetId=GLOSSARY_SPREADSHEET_ID, range="'Sessions'!A2:Z"
                 ).execute()
                 st.session_state.clear()
                 st.success("All locks and sessions have been purged!")
@@ -959,6 +982,7 @@ def get_fallback_models():
         except Exception: pass
     return ["gemini-2.5-flash", "gemini-1.5-flash"]
 
+# --- الحل الخاص بتجاوز خلية شيتس بقص הـ JSON ---
 def manage_document_lock(file_id: str, user_email: str):
     try:
         res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
@@ -970,7 +994,10 @@ def manage_document_lock(file_id: str, user_email: str):
             if len(row) > 0 and row[0] == file_id:
                 locked_by = row[1] if len(row) > 1 else ""
                 ts = float(row[2]) if len(row) > 2 and row[2] else 0
-                saved_json = row[3] if len(row) > 3 else ""
+                
+                # تجميع الـ JSON من القطع المقسمة في الأعمدة D حتى Z
+                saved_json = "".join([cell for cell in row[3:] if cell])
+                
                 if locked_by and locked_by != user_email and (current_time - ts) < LOCK_TIMEOUT_SECONDS:
                     return {"status": "blocked", "locked_by": locked_by, "row_index": index + 1}
                 if locked_by == user_email and saved_json:
@@ -993,18 +1020,27 @@ def save_draft_to_sheet(file_id, user_email, row_index, processed_data):
     if not row_index: return
     try:
         json_data = json.dumps(processed_data, ensure_ascii=False)
+        
+        # قص הـ JSON إلى أجزاء لتجاوز حاجز الـ 50 ألف حرف لكل خلية
+        chunk_size = 45000
+        chunks = [json_data[i:i+chunk_size] for i in range(0, len(json_data), chunk_size)]
+        
+        row_data = [file_id, user_email, str(time.time())] + chunks
+        row_data.extend([""] * (26 - len(row_data))) # حجز 26 عمود (A-Z) لمسح الجلسات القديمة
+
         sheets_service.spreadsheets().values().update(
-            spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}",
-            valueInputOption="USER_ENTERED", body={"values": [[file_id, user_email, str(time.time()), json_data]]},
+            spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:Z{row_index}",
+            valueInputOption="USER_ENTERED", body={"values": [row_data]},
         ).execute()
     except Exception: pass
 
 def release_document_lock(row_index):
     if not row_index: return
     try:
+        empty_row = [""] * 26
         sheets_service.spreadsheets().values().update(
-            spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}",
-            valueInputOption="USER_ENTERED", body={"values": [["", "", "", ""]]},
+            spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:Z{row_index}",
+            valueInputOption="USER_ENTERED", body={"values": [empty_row]},
         ).execute()
     except Exception: pass
 
@@ -1378,11 +1414,12 @@ c1, c2 = st.columns([4, 2])
 c1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
 with c2:
     b_col, g_col = st.columns([1, 1])
+    # إضافة ميزة حفظ التقدم الإجباري عند الضغط على زر الرجوع
     if b_col.button("⬅️ Back", width="stretch"):
-        # الإصلاح 1: التأكد من حفظ التقدم قبل الخروج
         if st.session_state.get("processed_data"):
             save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), st.session_state.get("processed_data"))
-        st.session_state.update({"active_task": None, "source_file_id": None, "processed_data": None, "app_mode": "Volunteer Dashboard"}); st.rerun()
+        st.session_state.update({"active_task": None, "source_file_id": None, "processed_data": None, "app_mode": "Volunteer Dashboard"})
+        st.rerun()
     if glossary_term_count > 0: g_col.success(f"📖 Glossary: {glossary_term_count} terms")
     else: g_col.warning("⚠️ Glossary: Not Loaded")
 
@@ -1402,6 +1439,9 @@ if not st.session_state.get("processed_data"):
         if paras:
             processed_results = []
             progress_bar = st.progress(0)
+            
+            # رسالة التنبيه الجديدة (Popup Notification)
+            st.info("⏳ جاري معالجة المقالة عبر الذكاء الاصطناعي... يرجى الانتظار وعدم تحديث الصفحة لتجنب فقدان البيانات.")
 
             if app_mode == "Translator Mode":
                 batches = [paras[i : i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
@@ -1467,7 +1507,7 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
             c_en, c_ar = st.columns(2)
             c_en.info(item.get("english", ""))
             if item.get("glossary_notes"): c_en.caption(f"💡 {item.get('glossary_notes')}")
-            # الإصلاح 2: إضافة file_id لمفاتيح الصناديق لمنع التداخل
+            # تم إضافة file_id لمفاتيح الصناديق لمنع التداخل
             final_text = c_ar.text_area("Final text", value=item.get("user_arabic", ""), height=120, key=f"edit_{file_id}_{i}", label_visibility="collapsed")
             if final_text != item.get("user_arabic"): item["user_arabic"] = final_text; state_modified = True
         else:
@@ -1477,11 +1517,11 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
             c_en.info(item.get("english", ""))
             c_ar.markdown(generate_html_diff(item.get("original_arabic", ""), item.get("suggested_arabic", "")), unsafe_allow_html=True)
             c_ar.expander("💡 Reasoning").write(item.get("reasoning", ""))
-            # الإصلاح 2: إضافة file_id لمفاتيح الصناديق لمنع التداخل
+            # تم إضافة file_id لمفاتيح الصناديق لمنع التداخل
             final_text = c_ar.text_area("Final Output", value=item.get("user_arabic", ""), height=120, key=f"edit_ar_{file_id}_{i}", label_visibility="collapsed")
             if final_text != item.get("user_arabic"): item["user_arabic"] = final_text; state_modified = True
 
-        # الإصلاح 2: إضافة file_id لمربعات الاختيار
+        # تم إضافة file_id لمفتاح Checkbox
         chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{file_id}_{i}", value=item.get("is_approved", False))
         if chk != item.get("is_approved"): item["is_approved"] = chk; state_modified = True
         if chk:
@@ -1505,7 +1545,6 @@ if approved_count == total_segments and total_segments > 0:
             with st.spinner("Processing Drive updates..."):
                 success = push_to_drive_translator(file_id, finalized_data) if (app_mode == "Translator Mode" or is_bypass_task) else push_to_drive_reviewer(file_id, finalized_data)
                 if success:
-                    # --- BUG FIX: Fetch fresh data to prevent race conditions ---
                     fresh_assignments = fetch_assignments()
                     fresh_task = next((t for t in fresh_assignments if t.get("doc_id") == file_id), task)
                     
@@ -1516,7 +1555,6 @@ if approved_count == total_segments and total_segments > 0:
                     if app_mode == "Translator Mode": 
                         new_status = STATUS_REV_ASSIGNED if r_email else STATUS_TRANS_COMPLETED
                         if new_status == STATUS_REV_ASSIGNED:
-                            # Notify Reviewer
                             vols = fetch_volunteers()
                             t_n = vols.get(t_email, {}).get("name", "")
                             r_n = vols.get(r_email, {}).get("name", "")
@@ -1525,7 +1563,6 @@ if approved_count == total_segments and total_segments > 0:
                     else: 
                         new_status = STATUS_REC_ASSIGNED if rec_email else STATUS_REC_PENDING
                         if new_status == STATUS_REC_ASSIGNED:
-                            # Notify Recorder
                             vols = fetch_volunteers()
                             t_n = vols.get(t_email, {}).get("name", "")
                             r_n = vols.get(r_email, {}).get("name", "")
