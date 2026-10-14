@@ -1433,14 +1433,33 @@ if app_mode == "Recorder Mode":
 # TRANSLATOR / REVIEWER WORKSPACE
 # ---------------------------------------------------------
 glossary_data, glossary_term_count = fetch_glossary()
-c1, c2 = st.columns([4, 2])
+# تعديل مساحة الأعمدة لتستوعب الزر الجديد
+c1, c2 = st.columns([3, 3]) 
 c1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
 with c2:
-    b_col, g_col = st.columns([1, 1])
+    # تقسيم المساحة إلى 3 أعمدة (رجوع، حفظ يدوي، قاموس)
+    b_col, save_col, g_col = st.columns([1, 1.2, 1])
+    
+    # 1. زر الرجوع (معدل ليقوم بالحفظ الإجباري وتحرير القفل قبل الخروج)
     if b_col.button("⬅️ Back", width="stretch"):
-        st.session_state.update({"active_task": None, "source_file_id": None, "processed_data": None, "app_mode": "Volunteer Dashboard"}); st.rerun()
-    if glossary_term_count > 0: g_col.success(f"📖 Glossary: {glossary_term_count} terms")
-    else: g_col.warning("⚠️ Glossary: Not Loaded")
+        if st.session_state.get("processed_data"):
+            save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), st.session_state.get("processed_data"))
+        release_document_lock(st.session_state.get("session_row_index"))
+        st.session_state.update({"active_task": None, "source_file_id": None, "processed_data": None, "app_mode": "Volunteer Dashboard"})
+        st.rerun()
+        
+    # 2. زر الحفظ اليدوي (للطمأنينة والإجبار قبل إغلاق المتصفح)
+    if save_col.button("💾 Force Save", width="stretch"):
+        if st.session_state.get("processed_data"):
+            save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), st.session_state.get("processed_data"))
+            st.session_state["last_save_time"] = time.time() # تصفير العداد لكي لا يحفظ مرة أخرى فوراً
+            st.toast("✅ Saved successfully to Google Drive!")
+            
+    # 3. حالة القاموس (كما هي)
+    if glossary_term_count > 0: 
+        g_col.success(f"📖 Glossary: {glossary_term_count}")
+    else: 
+        g_col.warning("⚠️ No Glossary")
 
 is_bypass_task = task.get("translator") == ""
 
