@@ -1028,39 +1028,58 @@ def save_draft_to_sheet(file_id, user_email, row_index, processed_data):
     if not row_index: return
     try:
         json_data = json.dumps(processed_data, ensure_ascii=False)
-        folder_id = '1L-Y3X_THT9aM1lhZD_yiusaeJ3OgeDy1' # المجلد الخاص بك
+        folder_id = '1L-Y3X_THT9aM1lhZD_yiusaeJ3OgeDy1' 
         
-        # 1. حفظ البيانات في ملف نصي داخل Google Drive
         file_metadata = {
             'name': f"Session_Backup_{file_id}.json",
             'mimeType': 'application/json',
             'parents': [folder_id] 
         }
+        
         media = io.BytesIO(json_data.encode('utf-8'))
         from googleapiclient.http import MediaIoBaseUpload
         media_upload = MediaIoBaseUpload(media, mimetype='application/json')
         
-        # 🚨 التعديل الجذري هنا: حصر البحث داخل مجلدك فقط
+        # 1. البحث عن الملف القديم مع إضافة بارامتر supportsAllDrives و includeItemsFromAllDrives 
+        # هذا ضروري جداً لكي يرى حساب الخدمة المجلدات المشتركة
         query = f"'{folder_id}' in parents and name='Session_Backup_{file_id}.json' and trashed=false"
+        existing_files_response = drive_service.files().list(
+            q=query, 
+            spaces='drive',
+            supportsAllDrives=True,          # التعديل الهام الأول
+            includeItemsFromAllDrives=True   # التعديل الهام الثاني
+        ).execute()
         
-        existing_files = drive_service.files().list(q=query, spaces='drive').execute().get('files', [])
+        existing_files = existing_files_response.get('files', [])
         
         if existing_files:
             backup_file_id = existing_files[0]['id']
-            drive_service.files().update(fileId=backup_file_id, media_body=media_upload).execute()
+            # التحديث يتطلب أيضاً نفس البارامتر
+            drive_service.files().update(
+                fileId=backup_file_id, 
+                media_body=media_upload,
+                supportsAllDrives=True      # التعديل الهام الثالث
+            ).execute()
         else:
-            created_file = drive_service.files().create(body=file_metadata, media_body=media_upload).execute()
+            # الإنشاء يتطلب نفس البارامتر
+            created_file = drive_service.files().create(
+                body=file_metadata, 
+                media_body=media_upload,
+                supportsAllDrives=True      # التعديل الهام الرابع
+            ).execute()
             backup_file_id = created_file.get('id')
 
-        # 2. حفظ رقم هوية ملف النسخة الاحتياطية فقط في جوجل شيتس
+        # 2. حفظ رقم هوية الملف في شيتس
         sheets_service.spreadsheets().values().update(
-            spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}",
-            valueInputOption="USER_ENTERED", body={"values": [[file_id, user_email, str(time.time()), backup_file_id]]},
+            spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
+            range=f"'Sessions'!A{row_index}:D{row_index}",
+            valueInputOption="USER_ENTERED", 
+            body={"values": [[file_id, user_email, str(time.time()), backup_file_id]]}
         ).execute()
         
     except Exception as e:
-        # لكشف أي خطأ مخفي في الصلاحيات أو الاتصال (ضروري جداً أثناء الاختبار)
-        st.error(f"Error saving to Drive: {e}")
+        # إظهار رسالة الخطأ على الشاشة لكي نرى المشكلة بأعيننا!
+        st.error(f"🚨 خطأ في الحفظ في درايف: {e}")
 
 def release_document_lock(row_index):
     if not row_index: return
