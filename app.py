@@ -1524,55 +1524,66 @@ if not st.session_state.get("processed_data"):
             st.session_state["processed_data"] = processed_results
             st.rerun()
 
-approved_count, finalized_data, any_state_modified = 0, [], False
+approved_count, finalized_data = 0, []
 st.divider()
 
-# دالة رسم الصناديق كـ Fragment لمنع التهنيج
+# 1. دالة رسم صناديق النصوص كـ Fragment (معزولة لمنع التهنيج أثناء الكتابة)
 @st.fragment
-def render_segment(i, item, file_id, app_mode):
+def render_text_editor(i, item, file_id, app_mode):
     seg_id = item.get("id", i + 1)
-    state_modified = False
     
-    with st.container(border=True):
-        if app_mode == "Translator Mode":
-            st.markdown(f"### Segment {seg_id}")
-            c_en, c_ar = st.columns(2)
-            c_en.info(item.get("english", ""))
-            if item.get("glossary_notes"): c_en.caption(f"💡 {item.get('glossary_notes')}")
-            final_text = c_ar.text_area("Final text", value=item.get("user_arabic", ""), height=120, key=f"edit_{file_id}_{i}", label_visibility="collapsed")
-            if final_text != item.get("user_arabic"): item["user_arabic"] = final_text; state_modified = True
-        else:
-            color = "🟢" if item.get("status") == "perfect" else ("🟡" if item.get("status") == "minor_edits" else "🔴")
-            st.markdown(f"### Segment {seg_id} | Status: {color} {item.get('status').upper()}")
-            c_en, c_ar = st.columns(2)
-            c_en.info(item.get("english", ""))
-            c_ar.markdown(generate_html_diff(item.get("original_arabic", ""), item.get("suggested_arabic", "")), unsafe_allow_html=True)
-            c_ar.expander("💡 Reasoning").write(item.get("reasoning", ""))
-            final_text = c_ar.text_area("Final Output", value=item.get("user_arabic", ""), height=120, key=f"edit_ar_{file_id}_{i}", label_visibility="collapsed")
-            if final_text != item.get("user_arabic"): item["user_arabic"] = final_text; state_modified = True
-
-        chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{file_id}_{i}", value=item.get("is_approved", False))
-        if chk != item.get("is_approved"): item["is_approved"] = chk; state_modified = True
+    if app_mode == "Translator Mode":
+        st.markdown(f"### Segment {seg_id}")
+        c_en, c_ar = st.columns(2)
+        c_en.info(item.get("english", ""))
+        if item.get("glossary_notes"): c_en.caption(f"💡 {item.get('glossary_notes')}")
+        final_text = c_ar.text_area("Final text", value=item.get("user_arabic", ""), height=120, key=f"edit_{file_id}_{i}", label_visibility="collapsed")
         
-        return chk, final_text, state_modified
+        if final_text != item.get("user_arabic"): 
+            item["user_arabic"] = final_text
+            # عداد الحفظ المخفي أثناء الكتابة (لن يعطل المتطوع)
+            current_time = time.time()
+            if current_time - st.session_state.get("last_save_time", 0) > 60:
+                save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), st.session_state.get("processed_data"))
+                st.session_state["last_save_time"] = current_time
+    else:
+        color = "🟢" if item.get("status") == "perfect" else ("🟡" if item.get("status") == "minor_edits" else "🔴")
+        st.markdown(f"### Segment {seg_id} | Status: {color} {item.get('status').upper()}")
+        c_en, c_ar = st.columns(2)
+        c_en.info(item.get("english", ""))
+        c_ar.markdown(generate_html_diff(item.get("original_arabic", ""), item.get("suggested_arabic", "")), unsafe_allow_html=True)
+        c_ar.expander("💡 Reasoning").write(item.get("reasoning", ""))
+        final_text = c_ar.text_area("Final Output", value=item.get("user_arabic", ""), height=120, key=f"edit_ar_{file_id}_{i}", label_visibility="collapsed")
+        
+        if final_text != item.get("user_arabic"): 
+            item["user_arabic"] = final_text
+            current_time = time.time()
+            if current_time - st.session_state.get("last_save_time", 0) > 60:
+                save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), st.session_state.get("processed_data"))
+                st.session_state["last_save_time"] = current_time
 
+# 2. حلقة العرض الرئيسية
 for i, item in enumerate(st.session_state.get("processed_data", [])):
-    chk, final_text, state_modified = render_segment(i, item, file_id, app_mode)
-    
-    if state_modified:
-        any_state_modified = True
+    seg_id = item.get("id", i + 1)
+    with st.container(border=True):
         
+        # أ: استدعاء صندوق النص السريع (المعزول)
+        render_text_editor(i, item, file_id, app_mode)
+        
+        # ب: رسم مربع الاختيار (خارج العزل) لكي يحدث العداد عند النقر
+        chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{file_id}_{i}", value=item.get("is_approved", False))
+        if chk != item.get("is_approved"): 
+            item["is_approved"] = chk
+            # حفظ تلقائي لضمان عدم ضياع الاعتماد
+            current_time = time.time()
+            if current_time - st.session_state.get("last_save_time", 0) > 60:
+                save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), st.session_state.get("processed_data"))
+                st.session_state["last_save_time"] = current_time
+
+    # ج: زيادة العداد وتجميع البيانات النهائية إذا كان المربع مؤشراً
     if chk:
         approved_count += 1
-        finalized_data.append({"final_arabic": final_text, "ar_start": item.get("ar_start"), "ar_end": item.get("ar_end"), "en_start": item.get("en_start")})
-
-# الحفظ التلقائي الزمني (كل 60 ثانية)
-if any_state_modified:
-    current_time = time.time()
-    time_elapsed = current_time - st.session_state.get("last_save_time", 0)
-    if time_elapsed > 60: 
-        save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), st.session_state.get("processed_data"))
-        st.session_state["last_save_time"] = current_time
+        finalized_data.append({"final_arabic": item.get("user_arabic"), "ar_start": item.get("ar_start"), "ar_end": item.get("ar_end"), "en_start": item.get("en_start")})
 
 st.divider()
 total_segments = len(st.session_state.get("processed_data", []))
