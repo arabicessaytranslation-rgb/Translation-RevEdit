@@ -884,20 +884,32 @@ if not st.session_state.get("source_file_id") and st.session_state.get("app_mode
     if not my_tasks:
         st.success("🎉 You have no pending tasks in your queue. Great job!")
     else:
+        vols = fetch_volunteers()
         for task in my_tasks:
             with st.container(border=True):
                 c1, c2 = st.columns([4, 1.2])
                 cur_s = task.get("status")
                 task_mode = task.get("task_mode")
                 
-                if task_mode == "Translator Mode": due_str = task.get('t_due')
-                elif task_mode == "Reviewer Mode": due_str = task.get('r_due')
-                else: due_str = task.get('rec_due')
+                t_name = vols.get(task.get("translator", ""), {}).get("name", "AI Bypass")
+                r_name = vols.get(task.get("reviewer", ""), {}).get("name", "Pending")
+                rec_name = vols.get(task.get("recorder", ""), {}).get("name", "Pending Match")
+                
+                if task_mode == "Translator Mode": 
+                    due_str = task.get('t_due')
+                    roster_ui = f"👥 **Your Editor:** {r_name} &nbsp;|&nbsp; **Audio:** {rec_name}"
+                elif task_mode == "Reviewer Mode": 
+                    due_str = task.get('r_due')
+                    roster_ui = f"👥 **Translated by:** {t_name} &nbsp;|&nbsp; **Audio:** {rec_name}"
+                else: 
+                    due_str = task.get('rec_due')
+                    roster_ui = f"👥 **Translator:** {t_name} &nbsp;|&nbsp; **Editor:** {r_name}"
                 
                 badge = "🟠" if "Assigned" in cur_s else ("🟡" if "Started" in cur_s else "⏳")
                 with c1:
                     st.markdown(f"### 📄 **[{task.get('doc_name')}](https://docs.google.com/document/d/{task.get('doc_id')}/edit)**")
                     st.caption(f"Current Stage: `{badge} {cur_s}` | **Phase Deadline:** `{due_str if due_str else 'N/A'}`")
+                    st.info(roster_ui)
                 with c2:
                     st.write("")
                     btn_text = "🔄 Continue Working" if "Started" in cur_s else "🚀 Start Work"
@@ -982,7 +994,7 @@ def get_fallback_models():
         except Exception: pass
     return ["gemini-2.5-flash", "gemini-1.5-flash"]
 
-# --- الحل الخاص بتجاوز خلية شيتس بقص הـ JSON ---
+# --- الحل الخاص بتجاوز خلية شيتس بقص الـ JSON ---
 def manage_document_lock(file_id: str, user_email: str):
     try:
         res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
@@ -1010,9 +1022,10 @@ def manage_document_lock(file_id: str, user_email: str):
 
 def acquire_document_lock(file_id: str, user_email: str, row_index: int):
     try:
+        row_data = [file_id, user_email, str(time.time())] + [""] * 23
         sheets_service.spreadsheets().values().update(
-            spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:D{row_index}",
-            valueInputOption="USER_ENTERED", body={"values": [[file_id, user_email, str(time.time()), ""]]},
+            spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{row_index}:Z{row_index}",
+            valueInputOption="USER_ENTERED", body={"values": [row_data]},
         ).execute()
     except Exception: pass
 
@@ -1021,7 +1034,7 @@ def save_draft_to_sheet(file_id, user_email, row_index, processed_data):
     try:
         json_data = json.dumps(processed_data, ensure_ascii=False)
         
-        # قص הـ JSON إلى أجزاء لتجاوز حاجز الـ 50 ألف حرف لكل خلية
+        # قص الـ JSON إلى أجزاء لتجاوز حاجز الـ 50 ألف حرف لكل خلية
         chunk_size = 45000
         chunks = [json_data[i:i+chunk_size] for i in range(0, len(json_data), chunk_size)]
         
@@ -1414,9 +1427,14 @@ c1, c2 = st.columns([4, 2])
 c1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
 with c2:
     b_col, g_col = st.columns([1, 1])
-    # إضافة ميزة حفظ التقدم الإجباري عند الضغط على زر الرجوع
+    # إضافة ميزة حفظ التقدم الإجباري والتقاط أحدث تعديلات الصناديق عند الضغط على زر الرجوع
     if b_col.button("⬅️ Back", width="stretch"):
         if st.session_state.get("processed_data"):
+            for i, item in enumerate(st.session_state["processed_data"]):
+                t_key = f"edit_{file_id}_{i}" if app_mode == "Translator Mode" else f"edit_ar_{file_id}_{i}"
+                c_key = f"chk_{file_id}_{i}"
+                if t_key in st.session_state: item["user_arabic"] = st.session_state[t_key]
+                if c_key in st.session_state: item["is_approved"] = st.session_state[c_key]
             save_draft_to_sheet(file_id, st.session_state.get("user_email"), st.session_state.get("session_row_index"), st.session_state.get("processed_data"))
         st.session_state.update({"active_task": None, "source_file_id": None, "processed_data": None, "app_mode": "Volunteer Dashboard"})
         st.rerun()
