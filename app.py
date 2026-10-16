@@ -1400,8 +1400,8 @@ if app_mode == "Recorder Mode":
         st.markdown(f"<div class='reading-mode'>{'<br><br>'.join(ar_paras)}</div>", unsafe_allow_html=True)
         st.divider()
         c_rec, c_up = st.columns(2)
-        recorded_audio = c_rec.audio_input("🎙️ Record from mic:")
-        uploaded_audio = c_up.file_uploader("📂 Upload audio (MP3/WAV):", type=["mp3", "wav", "m4a"])
+        recorded_audio = c_rec.audio_input("🎙️ Record from mic:", key=f"mic_{file_id}")
+        uploaded_audio = c_up.file_uploader("📂 Upload audio (MP3/WAV):", type=["mp3", "wav", "m4a"], key=f"up_{file_id}")
         final_audio = recorded_audio or uploaded_audio
         if final_audio:
             st.audio(final_audio)
