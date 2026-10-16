@@ -638,6 +638,24 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
         st.subheader("📤 Final Deployment Desk")
         sub_link = st.text_input("🔗 Paste Edition Submission Folder Link (Google Drive):", placeholder="https://drive.google.com/drive/folders/...")
         
+        def proxy_deploy_to_gas(doc_id, doc_name, aud_link, sub_id):
+            gas_url = st.secrets.get("GAS_WEBAPP_URL")
+            gas_token = st.secrets.get("GAS_ACCESS_TOKEN")
+            aud_id = extract_id_from_url(aud_link) if aud_link else None
+            
+            payload = {
+                "action": "deploy_files",
+                "token": gas_token,
+                "destination_folder_id": sub_id,
+                "doc_id": doc_id,
+                "doc_name": f"[Final Arabic] {doc_name}",
+                "audio_id": aud_id,
+                "audio_name": f"[Audio] {doc_name}.mp3" if aud_id else ""
+            }
+            response = requests.post(gas_url, json=payload, timeout=30).json()
+            if response.get("status") != "success":
+                raise Exception(response.get("message", "Unknown GAS Error"))
+
         if ready_tasks:
             st.markdown(f"**{len(ready_tasks)} Assets Ready for Final Transfer:**")
             client_email = st.text_input("📧 CC Client Email (Optional - Leave blank to only notify Admin):")
@@ -649,20 +667,12 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                     if not sub_id:
                         st.error("Please paste a valid Google Drive Folder URL above.")
                     else:
-                        with st.spinner(f"Batch copying {len(ready_tasks)} assets..."):
+                        with st.spinner(f"Batch copying {len(ready_tasks)} assets via GAS Proxy..."):
                             success_count = 0
                             deployed_names = []
                             for rt in ready_tasks:
                                 try:
-                                    # 1. Copy Document with clean name
-                                    drive_service.files().copy(fileId=rt.get("doc_id"), body={'name': f"[Final Arabic] {rt.get('doc_name')}", 'parents': [sub_id]}).execute()
-                                    
-                                    # 2. Copy Audio with clean name
-                                    if rt.get("audio_link"):
-                                        aud_id = extract_id_from_url(rt.get("audio_link"))
-                                        if aud_id: 
-                                            drive_service.files().copy(fileId=aud_id, body={'name': f"[Audio] {rt.get('doc_name')}.mp3", 'parents': [sub_id]}).execute()
-                                    
+                                    proxy_deploy_to_gas(rt.get("doc_id"), rt.get("doc_name"), rt.get("audio_link"), sub_id)
                                     update_assignment_status(rt.get("doc_id"), STATUS_SUBMITTED)
                                     success_count += 1
                                     deployed_names.append(rt.get("doc_name"))
@@ -699,17 +709,9 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                         if not sub_id:
                             st.error("Please paste a valid Google Drive Folder URL above.")
                         else:
-                            with st.spinner("Copying assets..."):
+                            with st.spinner("Copying assets via GAS Proxy..."):
                                 try:
-                                    # 1. Copy Document
-                                    drive_service.files().copy(fileId=rt.get("doc_id"), body={'name': f"[Final Arabic] {rt.get('doc_name')}", 'parents': [sub_id]}).execute()
-                                    
-                                    # 2. Copy Audio (Fixed Name)
-                                    if rt.get("audio_link"):
-                                        aud_id = extract_id_from_url(rt.get("audio_link"))
-                                        if aud_id: 
-                                            drive_service.files().copy(fileId=aud_id, body={'name': f"[Audio] {rt.get('doc_name')}.mp3", 'parents': [sub_id]}).execute()
-                                    
+                                    proxy_deploy_to_gas(rt.get("doc_id"), rt.get("doc_name"), rt.get("audio_link"), sub_id)
                                     update_assignment_status(rt.get("doc_id"), STATUS_SUBMITTED)
                                     
                                     admin_mail = st.secrets.get("ADMIN_EMAIL", "")
