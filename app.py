@@ -563,7 +563,13 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                 d_id = t.get("doc_id")
                 t_disp = format_vol_label(t.get("translator")) if t.get("translator") else "🤖 AI Bypass"
                 r_disp = format_vol_label(t.get("reviewer"))
-                rec_disp = format_vol_label(t.get("recorder")) if t.get("recorder") else "Unassigned"
+                # -- التعديل 1: إظهار أن المقالة معفاة من الصوت --
+                if t.get("recorder") == "SKIP_AUDIO":
+                    rec_disp = "🚫 معفاة من التسجيل"
+                elif t.get("recorder"):
+                    rec_disp = format_vol_label(t.get("recorder"))
+                else:
+                    rec_disp = "Unassigned"
                 
                 dl_t = f" (Due {t.get('t_due')})" if t.get('t_due') else ""
                 dl_r = f" (Due {t.get('r_due')})" if t.get('r_due') else ""
@@ -586,9 +592,19 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                             new_r = st.selectbox("Reviewer:", r_opts, index=r_opts.index(t.get("reviewer")) if t.get("reviewer") in r_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"r_{d_id}")
                             new_rec = st.selectbox("Recorder:", rec_opts, index=rec_opts.index(t.get("recorder")) if t.get("recorder") in rec_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"rec_{d_id}")
 
+                            # -- التعديل 2: إضافة خيار الإعفاء --
+                            skip_audio = st.checkbox("🚫 إعفاء المقالة من التسجيل الصوتي", value=(t.get("recorder") == "SKIP_AUDIO"), key=f"skip_{d_id}")
+                            
                             c_save, c_unlock = st.columns(2)
                             
                             if c_save.button("💾 Save Settings", key=f"b_up_{d_id}", type="primary", width="stretch"):
+                                # إذا تم تفعيل الإعفاء
+                                if skip_audio:
+                                    new_rec = "SKIP_AUDIO"
+                                    # إذا كانت المقالة عالقة حالياً بانتظار مسجل، انقلها فوراً للجاهزية
+                                    if new_s in [STATUS_REC_PENDING, STATUS_REC_ASSIGNED]:
+                                        new_s = STATUS_REC_COMPLETED
+
                                 update_assignment_status(d_id, new_s)
                                 update_assignment_roles(d_id, new_t, new_r, new_rec)
 
@@ -604,7 +620,8 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                                 if new_r and new_r != t.get("reviewer"):
                                     send_role_notification(new_r, t.get('doc_name'), d_id, "Review", t_n, r_n, rec_n)
                                     emails_sent += 1
-                                if new_rec and new_rec != t.get("recorder"):
+                                # نتأكد أننا لا نرسل إيميل إذا كانت القيمة SKIP_AUDIO
+                                if new_rec and new_rec != "SKIP_AUDIO" and new_rec != t.get("recorder"):
                                     send_role_notification(new_rec, t.get('doc_name'), d_id, "Recording", t_n, r_n, rec_n)
                                     emails_sent += 1
 
@@ -657,39 +674,50 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                 raise Exception(response.get("message", "Unknown GAS Error"))
 
         if ready_tasks:
-            st.markdown(f"**{len(ready_tasks)} Assets Ready for Final Transfer:**")
+            # التعديل: حساب عدد الملفات الفعلية (مقال + صوت لكل مهمة)
+            total_files = sum(2 if rt.get("audio_link") else 1 for rt in ready_tasks)
+            
+            st.markdown(f"**{len(ready_tasks)} Tasks Ready ({total_files} Total Files to Transfer):**")
             client_email = st.text_input("📧 CC Client Email (Optional - Leave blank to only notify Admin):")
             
             # --- BATCH DEPLOYMENT BUTTON ---
             if len(ready_tasks) > 1:
-                if st.button(f"🚀 Deploy ALL {len(ready_tasks)} Ready Assets", type="primary", use_container_width=True):
+                if st.button(f"🚀 Deploy ALL {total_files} Files", type="primary", use_container_width=True):
                     sub_id = extract_id_from_url(sub_link)
                     if not sub_id:
                         st.error("Please paste a valid Google Drive Folder URL above.")
                     else:
-                        with st.spinner(f"Batch copying {len(ready_tasks)} assets via GAS Proxy..."):
-                            success_count = 0
+                        with st.spinner(f"Batch copying {total_files} files via GAS Proxy..."):
+                            success_files_count = 0
                             deployed_names = []
                             for rt in ready_tasks:
                                 try:
                                     proxy_deploy_to_gas(rt.get("doc_id"), rt.get("doc_name"), rt.get("audio_link"), sub_id)
                                     update_assignment_status(rt.get("doc_id"), STATUS_SUBMITTED)
-                                    success_count += 1
-                                    deployed_names.append(rt.get("doc_name"))
+                                    
+                                    # توثيق نقل المقالة
+                                    success_files_count += 1
+                                    deployed_names.append(f"📄 [Final Arabic] {rt.get('doc_name')}")
+                                    
+                                    # توثيق نقل الملف الصوتي
+                                    if rt.get("audio_link"):
+                                        success_files_count += 1
+                                        deployed_names.append(f"🎙️ [Audio] {rt.get('doc_name')}.mp3")
+                                        
                                 except Exception as e:
                                     st.error(f"Failed to transfer '{rt.get('doc_name')}': {e}")
                             
-                            # Send 1 Consolidated Email Receipt
-                            if success_count > 0:
+                            # Send 1 Consolidated Email Receipt with individual files
+                            if success_files_count > 0:
                                 admin_mail = st.secrets.get("ADMIN_EMAIL", "")
                                 doc_list = "\n".join([f"- {name}" for name in deployed_names])
-                                msg_body = f"Successfully deployed {success_count} assets to the client folder:\n\n{doc_list}"
+                                msg_body = f"Successfully deployed {success_files_count} deliverables to the client folder:\n\n{doc_list}"
                                 
-                                send_system_email(admin_mail, f"✅ Batch Deployed: {success_count} Assets", msg_body)
+                                send_system_email(admin_mail, f"✅ Batch Deployed: {success_files_count} Deliverables", msg_body)
                                 if client_email: 
-                                    send_system_email(client_email, f"New 12-Step Literature Available: {success_count} Assets", msg_body)
+                                    send_system_email(client_email, f"New 12-Step Literature Available: {success_files_count} Deliverables", msg_body)
                                 
-                                st.success(f"Batch transfer complete! {success_count} assets deployed.")
+                                st.success(f"Batch transfer complete! {success_files_count} files deployed.")
                                 time.sleep(2)
                                 st.rerun()
             st.markdown("---")
@@ -709,17 +737,18 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                         if not sub_id:
                             st.error("Please paste a valid Google Drive Folder URL above.")
                         else:
-                            with st.spinner("Copying assets via GAS Proxy..."):
+                            with st.spinner("Copying files via GAS Proxy..."):
                                 try:
                                     proxy_deploy_to_gas(rt.get("doc_id"), rt.get("doc_name"), rt.get("audio_link"), sub_id)
                                     update_assignment_status(rt.get("doc_id"), STATUS_SUBMITTED)
                                     
+                                    files_pushed = 2 if rt.get("audio_link") else 1
                                     admin_mail = st.secrets.get("ADMIN_EMAIL", "")
-                                    msg_body = f"The final translated document and audio for '{rt.get('doc_name')}' have been successfully deployed to the client folder."
+                                    msg_body = f"The final translated document and audio for '{rt.get('doc_name')}' ({files_pushed} files) have been successfully deployed to the client folder."
                                     send_system_email(admin_mail, f"✅ Deployed: {rt.get('doc_name')}", msg_body)
                                     if client_email: send_system_email(client_email, f"New 12-Step Literature Available: {rt.get('doc_name')}", msg_body)
                                     
-                                    st.success("Transfer complete & notifications sent!")
+                                    st.success(f"Transfer complete! {files_pushed} files deployed & notifications sent!")
                                     time.sleep(1.5)
                                     st.rerun()
                                 except Exception as e:
@@ -1635,7 +1664,12 @@ if approved_count == total_segments and total_segments > 0:
                             rec_n = vols.get(rec_email, {}).get("name", "")
                             send_role_notification(r_email, fresh_task.get('doc_name'), file_id, "Review", t_n, r_n, rec_n)
                     else: 
-                        new_status = STATUS_REC_ASSIGNED if rec_email else STATUS_REC_PENDING
+                        # التعديل الجديد للمراجع: فحص هل المقالة معفاة من الصوت؟
+                        if rec_email == "SKIP_AUDIO":
+                            new_status = STATUS_REC_COMPLETED
+                        else:
+                            new_status = STATUS_REC_ASSIGNED if rec_email else STATUS_REC_PENDING
+                            
                         if new_status == STATUS_REC_ASSIGNED:
                             vols = fetch_volunteers()
                             t_n = vols.get(t_email, {}).get("name", "")
