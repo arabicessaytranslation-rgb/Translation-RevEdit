@@ -93,6 +93,18 @@ def apply_custom_css():
             box-shadow: 0 4px 6px rgba(0,0,0,0.05);
             border: 1px solid #e0e0e0;
         }
+
+        .sticky-recorder {
+            position: sticky;
+            top: 2rem;
+            z-index: 999;
+            background-color: #f8fafc;
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            margin-bottom: 20px;
+        }
     </style>
     """,
         unsafe_allow_html=True,
@@ -103,7 +115,6 @@ apply_custom_css()
 GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
 GLOSSARY_RANGE = "'المصطلحات'!A:D"
 GLOSSARY_DATA_RANGE = "'المصطلحات'!C:D"
-# تم توسيع النطاق إلى Z لحل مشكلة سعة الخلية
 SESSIONS_RANGE = "'Sessions'!A:Z"
 VOLUNTEERS_RANGE = "'Volunteers'!A:D"
 ASSIGNMENTS_RANGE = "'Assignments'!A:K" 
@@ -576,9 +587,32 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                             new_rec = st.selectbox("Recorder:", rec_opts, index=rec_opts.index(t.get("recorder")) if t.get("recorder") in rec_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"rec_{d_id}")
 
                             c_save, c_unlock = st.columns(2)
+                            
                             if c_save.button("💾 Save Settings", key=f"b_up_{d_id}", type="primary", width="stretch"):
                                 update_assignment_status(d_id, new_s)
                                 update_assignment_roles(d_id, new_t, new_r, new_rec)
+
+                                # --- Smart Detect & Auto-Email Logic ---
+                                t_n = vols.get(new_t, {}).get("name", "")
+                                r_n = vols.get(new_r, {}).get("name", "")
+                                rec_n = vols.get(new_rec, {}).get("name", "")
+
+                                emails_sent = 0
+                                if new_t and new_t != t.get("translator"):
+                                    send_role_notification(new_t, t.get('doc_name'), d_id, "Translation", t_n, r_n, rec_n)
+                                    emails_sent += 1
+                                if new_r and new_r != t.get("reviewer"):
+                                    send_role_notification(new_r, t.get('doc_name'), d_id, "Review", t_n, r_n, rec_n)
+                                    emails_sent += 1
+                                if new_rec and new_rec != t.get("recorder"):
+                                    send_role_notification(new_rec, t.get('doc_name'), d_id, "Recording", t_n, r_n, rec_n)
+                                    emails_sent += 1
+
+                                if emails_sent > 0:
+                                    st.toast(f"تم إرسال {emails_sent} إيميل للمتطوعين الجدد!", icon="📧")
+                                    time.sleep(1.5)
+                                # ---------------------------------------
+                                
                                 st.rerun()
                             
                             if c_unlock.button("🔓 Unlock Session", key=f"unlock_{d_id}", width="stretch"):
@@ -587,22 +621,18 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                                         res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
                                         for index, row in enumerate(res.get("values", [])):
                                             if len(row) > 0 and row[0] == doc_id:
-                                                empty_row = [""] * 26
-                                                sheets_service.spreadsheets().values().update(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=f"'Sessions'!A{index + 1}:Z{index + 1}", valueInputOption="USER_ENTERED", body={"values": [empty_row]}).execute()
+                                                # التعديل: مسح الإيميل والوقت فقط دون المساس ببيانات JSON (يسمح بتوريث التقدم)
+                                                sheets_service.spreadsheets().values().update(
+                                                    spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
+                                                    range=f"'Sessions'!B{index + 1}:C{index + 1}", 
+                                                    valueInputOption="USER_ENTERED", 
+                                                    body={"values": [["", ""]]}
+                                                ).execute()
                                     except Exception: pass
                                 admin_force_unlock(d_id)
-                                st.success("Session cleared!")
-                                
-                            # --- NEW: Manual Recorder Notification Button ---
-                            if new_rec and new_s in [STATUS_REC_PENDING, STATUS_REC_ASSIGNED]:
-                                st.divider()
-                                if st.button("📧 Dispatch to Recorder", key=f"notify_rec_{d_id}", width="stretch"):
-                                    t_n = vols.get(new_t, {}).get("name", "")
-                                    r_n = vols.get(new_r, {}).get("name", "")
-                                    rec_n = vols.get(new_rec, {}).get("name", "")
-                                    send_role_notification(new_rec, t.get("doc_name"), d_id, "Recording", t_n, r_n, rec_n)
-                                    update_assignment_status(d_id, STATUS_REC_ASSIGNED)
-                                    st.success(f"Email dispatched to {rec_n}!")
+                                st.success("Session unlocked (Progress preserved)!")
+                                time.sleep(1)
+                                st.rerun()
 
         st.divider()
         st.subheader("📤 Final Deployment Desk")
@@ -994,7 +1024,6 @@ def get_fallback_models():
         except Exception: pass
     return ["gemini-2.5-flash", "gemini-1.5-flash"]
 
-# --- الحل الخاص بتجاوز خلية شيتس بقص الـ JSON ---
 def manage_document_lock(file_id: str, user_email: str):
     try:
         res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
@@ -1010,11 +1039,17 @@ def manage_document_lock(file_id: str, user_email: str):
                 # تجميع الـ JSON من القطع المقسمة في الأعمدة D حتى Z
                 saved_json = "".join([cell for cell in row[3:] if cell])
                 
-                if locked_by and locked_by != user_email and (current_time - ts) < LOCK_TIMEOUT_SECONDS:
+                # التحقق مما إذا كانت الجلسة مقفلة بشكل نشط من قبل مستخدم آخر
+                is_active_other = locked_by and locked_by != user_email and (current_time - ts) < LOCK_TIMEOUT_SECONDS
+                
+                if is_active_other:
                     return {"status": "blocked", "locked_by": locked_by, "row_index": index + 1}
-                if locked_by == user_email and saved_json:
+                
+                # إذا لم تكن محجوزة لنشاط آخر (أو تم فتحها من المنسق)، ويوجد عمل محفوظ، نقوم بتوريثه
+                if saved_json:
                     try: return {"status": "recovered", "data": json.loads(saved_json), "row_index": index + 1}
                     except Exception: pass
+                    
                 return {"status": "clear", "row_index": index + 1}
         return {"status": "clear", "row_index": target_row_index}
     except Exception:
@@ -1139,7 +1174,7 @@ def review_with_ai(english: str, arabic: str, glossary_text: str):
 
 YOUR EDITORIAL CRITERIA:
 1. Spiritual & Emotional Integrity: Ensure the Arabic translation captures the exact nuance of the original English—neither diluting its psychological gravity nor turning it into moralistic preaching.
-​2. Narrative Flow & Arabic Idiom: Ensure sentences flow naturally with proper Arabic syntax, punctuation, and rhythm. Eliminate clunky translative traces.
+2. Narrative Flow & Arabic Idiom: Ensure sentences flow naturally with proper Arabic syntax, punctuation, and rhythm. Eliminate clunky translative traces.
 3. Strict Terminology Audit: Verify that recovery concepts strictly adhere to the official glossary. If a term misses the specific fellowship consensus, correct it to the exact glossary equivalent and explain the recovery rationale in 'reasoning'.
 
 OFFICIAL GLOSSARY:
@@ -1207,7 +1242,7 @@ def review_batch_with_fallback(batch_segments, glossary_text):
 
 YOUR EDITORIAL CRITERIA FOR THIS BATCH:
 1. Spiritual & Emotional Integrity: Ensure the Arabic translation captures the exact nuance of the original English—neither diluting its psychological gravity nor turning it into moralistic preaching.
-​2. Narrative Flow & Arabic Idiom: Ensure sentences flow naturally with proper Arabic syntax, punctuation, and rhythm. Eliminate clunky translative traces.
+2. Narrative Flow & Arabic Idiom: Ensure sentences flow naturally with proper Arabic syntax, punctuation, and rhythm. Eliminate clunky translative traces.
 3. Strict Terminology Audit: Verify that recovery concepts strictly adhere to the official glossary. If a term misses the specific fellowship consensus, correct it to the exact glossary equivalent and explain the recovery rationale in 'reasoning'.
 4. Status Assignment: 'perfect' (no edits needed), 'minor_edits' (small grammar/term corrections), 'major_rewrite' (missed core meaning or severely awkward).
 
@@ -1396,27 +1431,47 @@ if app_mode == "Recorder Mode":
     
     paras = extract_text_from_drive(file_id)
     if paras:
-        ar_paras = [p.get("text", "") for p in paras if re.search(r"[\u0600-\u06FF]", p.get("text", ""))]
-        st.markdown(f"<div class='reading-mode'>{'<br><br>'.join(ar_paras)}</div>", unsafe_allow_html=True)
-        st.divider()
+        # --- صندوق أدوات التسجيل العائم (Sticky Recorder) ---
+        st.markdown("<div class='sticky-recorder'>", unsafe_allow_html=True)
         c_rec, c_up = st.columns(2)
         recorded_audio = c_rec.audio_input("🎙️ Record from mic:", key=f"mic_{file_id}")
         uploaded_audio = c_up.file_uploader("📂 Upload audio (MP3/WAV):", type=["mp3", "wav", "m4a"], key=f"up_{file_id}")
         final_audio = recorded_audio or uploaded_audio
+        
         if final_audio:
             st.audio(final_audio)
-            if st.button("🚀 Upload & Complete Task", type="primary", width="stretch"):
-                with st.spinner("Processing & Uploading... (this may take a moment if converting formats)"):
-                    file_link = upload_audio_to_drive(final_audio, task.get("doc_name"), st.session_state.get("active_task_parent_folder", ""))
-                    if file_link:
-                        update_assignment_audio_link(file_id, file_link)
-                        update_assignment_status(file_id, STATUS_REC_COMPLETED)
-                        
-                        admin_mail = st.secrets.get("ADMIN_EMAIL", "")
-                        send_system_email(admin_mail, f"🎙️ Audio Ready: {task.get('doc_name')}", f"Hello,\n\n{st.session_state.get('user_name')} has successfully uploaded the audio for '{task.get('doc_name')}'.\n\nIt is now ready for deployment in the Coordinator Hub.")
-                        
-                        st.session_state.update({"active_task": None, "source_file_id": None, "app_mode": "Volunteer Dashboard"})
+            
+            btn1, btn2 = st.columns([3, 1])
+            with btn1:
+                if st.button("🚀 Upload & Complete Task", type="primary", use_container_width=True):
+                    with st.spinner("Processing & Uploading... (this may take a moment if converting formats)"):
+                        file_link = upload_audio_to_drive(final_audio, task.get("doc_name"), st.session_state.get("active_task_parent_folder", ""))
+                        if file_link:
+                            update_assignment_audio_link(file_id, file_link)
+                            update_assignment_status(file_id, STATUS_REC_COMPLETED)
+                            
+                            admin_mail = st.secrets.get("ADMIN_EMAIL", "")
+                            send_system_email(admin_mail, f"🎙️ Audio Ready: {task.get('doc_name')}", f"Hello,\n\n{st.session_state.get('user_name')} has successfully uploaded the audio for '{task.get('doc_name')}'.\n\nIt is now ready for deployment in the Coordinator Hub.")
+                            
+                            st.session_state.update({"active_task": None, "source_file_id": None, "app_mode": "Volunteer Dashboard"})
+                            st.rerun()
+                            
+            with btn2:
+                with st.popover("🗑️ حذف التسجيل", use_container_width=True):
+                    st.warning("هل أنت متأكد من رغبتك في حذف هذا التسجيل والبدء من جديد؟")
+                    if st.button("نعم، احذف", type="primary", use_container_width=True):
+                        if f"mic_{file_id}" in st.session_state: del st.session_state[f"mic_{file_id}"]
+                        if f"up_{file_id}" in st.session_state: del st.session_state[f"up_{file_id}"]
                         st.rerun()
+                        
+        st.markdown("</div>", unsafe_allow_html=True)
+        # ----------------------------------------------------
+
+        st.divider()
+        
+        ar_paras = [p.get("text", "") for p in paras if re.search(r"[\u0600-\u06FF]", p.get("text", ""))]
+        st.markdown(f"<div class='reading-mode'>{'<br><br>'.join(ar_paras)}</div>", unsafe_allow_html=True)
+        
     st.stop()
 
 # ---------------------------------------------------------
@@ -1427,7 +1482,6 @@ c1, c2 = st.columns([4, 2])
 c1.markdown(f"## 📝 Workspace: `{task.get('doc_name', 'Document')}`")
 with c2:
     b_col, g_col = st.columns([1, 1])
-    # إضافة ميزة حفظ التقدم الإجباري والتقاط أحدث تعديلات الصناديق عند الضغط على زر الرجوع
     if b_col.button("⬅️ Back", width="stretch"):
         if st.session_state.get("processed_data"):
             for i, item in enumerate(st.session_state["processed_data"]):
@@ -1448,7 +1502,11 @@ if not st.session_state.get("processed_data"):
     if lock["status"] == "blocked": st.error(f"🛑 **Locked:** by `{lock.get('locked_by')}`."); st.stop()
     elif lock["status"] == "recovered":
         st.session_state.update({"session_row_index": lock["row_index"], "processed_data": lock["data"]})
-        st.success("♻️ Session Recovered.")
+        
+        # --- تأمين المسودة لمالك الجلسة الجديد (توريث التقدم) ---
+        acquire_document_lock(file_id, st.session_state.get("user_email"), lock["row_index"])
+        
+        st.success("♻️ Session Recovered & Progress Inherited.")
     elif lock["status"] == "clear":
         st.session_state["session_row_index"] = lock["row_index"]
         acquire_document_lock(file_id, st.session_state.get("user_email"), lock["row_index"])
@@ -1458,7 +1516,6 @@ if not st.session_state.get("processed_data"):
             processed_results = []
             progress_bar = st.progress(0)
             
-            # رسالة التنبيه الجديدة (Popup Notification)
             st.info("⏳ جاري معالجة المقالة عبر الذكاء الاصطناعي... يرجى الانتظار وعدم تحديث الصفحة لتجنب فقدان البيانات.")
 
             if app_mode == "Translator Mode":
@@ -1525,7 +1582,6 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
             c_en, c_ar = st.columns(2)
             c_en.info(item.get("english", ""))
             if item.get("glossary_notes"): c_en.caption(f"💡 {item.get('glossary_notes')}")
-            # تم إضافة file_id لمفاتيح الصناديق لمنع التداخل
             final_text = c_ar.text_area("Final text", value=item.get("user_arabic", ""), height=120, key=f"edit_{file_id}_{i}", label_visibility="collapsed")
             if final_text != item.get("user_arabic"): item["user_arabic"] = final_text; state_modified = True
         else:
@@ -1535,11 +1591,9 @@ for i, item in enumerate(st.session_state.get("processed_data", [])):
             c_en.info(item.get("english", ""))
             c_ar.markdown(generate_html_diff(item.get("original_arabic", ""), item.get("suggested_arabic", "")), unsafe_allow_html=True)
             c_ar.expander("💡 Reasoning").write(item.get("reasoning", ""))
-            # تم إضافة file_id لمفاتيح الصناديق لمنع التداخل
             final_text = c_ar.text_area("Final Output", value=item.get("user_arabic", ""), height=120, key=f"edit_ar_{file_id}_{i}", label_visibility="collapsed")
             if final_text != item.get("user_arabic"): item["user_arabic"] = final_text; state_modified = True
 
-        # تم إضافة file_id لمفتاح Checkbox
         chk = st.checkbox(f"✅ Approve Segment {seg_id}", key=f"chk_{file_id}_{i}", value=item.get("is_approved", False))
         if chk != item.get("is_approved"): item["is_approved"] = chk; state_modified = True
         if chk:
@@ -1588,6 +1642,9 @@ if approved_count == total_segments and total_segments > 0:
                             send_role_notification(rec_email, fresh_task.get('doc_name'), file_id, "Recording", t_n, r_n, rec_n)
                     
                     update_assignment_status(file_id, new_status)
+                    
+                    # سيتم إخلاء الجلسة وتنظيف الخانات بالكامل بنجاح
                     release_document_lock(st.session_state.get("session_row_index"))
+                    
                     st.session_state.update({"active_task": None, "source_file_id": None, "processed_data": None, "review_unlocked": False, "app_mode": "Volunteer Dashboard"})
                     st.rerun()
