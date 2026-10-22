@@ -186,16 +186,40 @@ def send_system_email(to_email, subject, body):
     except Exception as e:
         print(f"Failed to send email to {to_email}: {e}")
 
-def send_role_notification(target_email, doc_name, doc_id, role, t_name, r_name, rec_name):
+def send_bulk_system_emails(messages):
+    if not messages: return
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(st.secrets.get("SMTP_EMAIL"), st.secrets.get("SMTP_PASSWORD"))
+            for m in messages:
+                if not m.get("to"): continue
+                msg = EmailMessage()
+                msg.set_content(m["body"])
+                msg["Subject"] = m["subject"]
+                msg["From"] = st.secrets.get("SMTP_EMAIL", "admin@localhost")
+                msg["To"] = m["to"]
+                server.send_message(msg)
+    except Exception as e:
+        print(f"Bulk email failed: {e}")
+
+def format_cancellation_email(target_email, doc_name, role):
+    subject = f"⚪ Task Reassigned: {doc_name}"
+    body = f"Hello,\n\nYou have been unassigned from the {role} phase for '{doc_name}'.\n\nThis task has been routed to another volunteer, and you no longer need to work on it. Thank you for your continued dedication!"
+    return {"to": target_email, "subject": subject, "body": body}
+
+def format_role_notification_email(target_email, doc_name, doc_id, role, t_name, r_name, rec_name, due_date=""):
     portal_url = st.secrets.get("PORTAL_URL", "https://your-app-url.streamlit.app")
     t_disp = t_name if t_name else "AI Bypass"
     r_disp = r_name if r_name else "To Be Assigned"
     rec_disp = rec_name if rec_name else "To Be Assigned (Pending Gender Match)"
+    
+    due_text = f"\n⏰ Your Phase Deadline: {due_date}\n" if due_date else ""
+    
     subject = f"🟢 New {role} Task: {doc_name}"
     body = f"""Hello,
 
 The text for '{doc_name}' is ready for your phase: {role}.
-
+{due_text}
 📋 Team Roster for this Article:
 - Translator: {t_disp}
 - Editor: {r_disp}
@@ -205,7 +229,7 @@ The text for '{doc_name}' is ready for your phase: {role}.
 - Open the Portal to start working: {portal_url}
 - View the Original Google Doc: https://docs.google.com/document/d/{doc_id}/edit
 """
-    send_system_email(target_email, subject, body)
+    return {"to": target_email, "subject": subject, "body": body}
 
 def fetch_volunteers():
     try:
@@ -368,6 +392,7 @@ if "source_file_id" not in st.session_state: st.session_state["source_file_id"] 
 if "session_row_index" not in st.session_state: st.session_state["session_row_index"] = None
 if "active_task" not in st.session_state: st.session_state["active_task"] = None
 if "admin_last_refresh" not in st.session_state: st.session_state["admin_last_refresh"] = 0
+if "staging_proposal" not in st.session_state: st.session_state["staging_proposal"] = None
 
 # ==========================================
 # 3. COORDINATOR HUB (ADMIN DASHBOARD)
@@ -403,7 +428,6 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
         with st.expander("➕ Expand to Auto-Dispatch New Edition"):
             t_active = [e for e, d in vols.items() if "translator" in d.get("role") and d.get("status", "").lower() == "active"]
             r_active = [e for e, d in vols.items() if "reviewer" in d.get("role") and d.get("status", "").lower() == "active"]
-            rec_active = [e for e, d in vols.items() if "recorder" in d.get("role") and d.get("status", "").lower() == "active"]
 
             try:
                 folder_res = drive_service.files().list(q="mimeType='application/vnd.google-apps.folder' and trashed=false", fields="files(id, name)").execute()
@@ -423,101 +447,155 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                         sel_month = c2.selectbox("📂 2. Target Month:", list(month_options.keys()))
                         month_id = month_options[sel_month]
 
-                        st.divider()
-                        c3, c4 = st.columns(2)
-                        sub_date = c3.date_input("📅 3. Select Final Submission Date:", value=datetime.today() + timedelta(days=20))
-                        
-                        with c4:
-                            st.write("**4. Select Volunteer Pool**")
-                            pool_t = st.multiselect("Translators:", t_active, format_func=format_vol_label)
-                            pool_r = st.multiselect("Reviewers (Mandatory):", r_active, format_func=format_vol_label)
-                            pool_rec = st.multiselect("Recorders:", rec_active, format_func=format_vol_label)
+                        # Fetch fresh documents without assigning yet
+                        doc_res = drive_service.files().list(q=f"'{month_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false", fields="files(id, name)").execute()
+                        docs = doc_res.get("files", [])
+                        existing_tasks = fetch_assignments()
+                        existing_ids = {t.get("doc_id") for t in existing_tasks}
+                        new_docs = [d for d in docs if d['id'] not in existing_ids]
 
-                        if st.button("🔄 Analyze Word Counts & Auto-Assign", type="primary", width="stretch"):
-                            if not pool_r:
-                                st.error("❌ At least one Reviewer must be selected.")
-                            else:
-                                with st.spinner("Scanning for new documents and balancing workloads..."):
-                                    doc_res = drive_service.files().list(q=f"'{month_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false", fields="files(id, name)").execute()
-                                    docs = doc_res.get("files", [])
-                                    
-                                    existing_tasks = fetch_assignments()
-                                    existing_ids = {t.get("doc_id") for t in existing_tasks}
-                                    
-                                    new_docs = [d for d in docs if d['id'] not in existing_ids]
-                                    
-                                    if not docs:
-                                        st.warning("No Google Docs found in this folder.")
-                                    elif not new_docs:
-                                        st.success("✅ All documents in this folder are already assigned in the pipeline. No new tasks to add.")
+                        if not docs:
+                            st.warning("No Google Docs found in this folder.")
+                        elif not new_docs:
+                            st.success("✅ All documents in this folder are already assigned or processed. No new tasks to add.")
+                        else:
+                            st.divider()
+                            st.write("### 🧹 Pre-Dispatch Audit & Trash")
+                            docs_to_trash = st.multiselect("Select irrelevant files to permanently move to Drive Trash:", [d['name'] for d in new_docs])
+                            if st.button("🗑️ Move Selected to Trash", type="primary"):
+                                if docs_to_trash:
+                                    with st.spinner("Trashing files..."):
+                                        for d_name in docs_to_trash:
+                                            d_id = next(d['id'] for d in new_docs if d['name'] == d_name)
+                                            drive_service.files().update(fileId=d_id, body={'trashed': True}).execute()
+                                    st.success("Files trashed successfully!")
+                                    time.sleep(1.5)
+                                    st.rerun()
+
+                            valid_docs = [d for d in new_docs if d['name'] not in docs_to_trash]
+                            
+                            if valid_docs:
+                                st.divider()
+                                st.write("### 📊 Distribution Setup")
+                                c3, c4 = st.columns(2)
+                                sub_date = c3.date_input("📅 Final Submission Date:", value=datetime.today() + timedelta(days=20))
+                                
+                                with c4:
+                                    pool_t = st.multiselect("Translators:", t_active, format_func=format_vol_label)
+                                    pool_r = st.multiselect("Reviewers (Mandatory):", r_active, format_func=format_vol_label)
+
+                                if st.button("🔄 Analyze & Preview Distribution", type="primary", width="stretch"):
+                                    if not pool_r:
+                                        st.error("❌ At least one Reviewer must be selected.")
                                     else:
-                                        doc_stats = []
-                                        for d in new_docs:
-                                            try:
-                                                document = docs_service.documents().get(documentId=d['id']).execute()
-                                                content = document.get('body', {}).get('content', [])
-                                                text_str = ""
-                                                for elem in content:
-                                                    if 'paragraph' in elem:
-                                                        for run in elem['paragraph'].get('elements', []):
-                                                            if 'textRun' in run: text_str += run['textRun'].get('content', '')
-                                                word_count = len(text_str.split())
-                                                doc_stats.append({'id': d['id'], 'name': d['name'], 'wc': word_count})
+                                        with st.spinner("Scanning documents and calculating workloads..."):
+                                            doc_stats = []
+                                            for d in valid_docs:
+                                                try:
+                                                    document = docs_service.documents().get(documentId=d['id']).execute()
+                                                    content = document.get('body', {}).get('content', [])
+                                                    text_str = ""
+                                                    for elem in content:
+                                                        if 'paragraph' in elem:
+                                                            for run in elem['paragraph'].get('elements', []):
+                                                                if 'textRun' in run: text_str += run['textRun'].get('content', '')
+                                                    word_count = len(text_str.split())
+                                                    doc_stats.append({'id': d['id'], 'name': d['name'], 'wc': word_count})
+                                                    del document
+                                                    gc.collect()
+                                                except:
+                                                    doc_stats.append({'id': d['id'], 'name': d['name'], 'wc': 500})
+                                            
+                                            doc_stats.sort(key=lambda x: x['wc'], reverse=True)
+
+                                            today = datetime.today().date()
+                                            total_days = (sub_date - today).days
+                                            if total_days < 4: total_days = 4
+                                            
+                                            t_days = max(1, int(total_days * 0.35))
+                                            r_days = max(1, int(total_days * 0.35))
+                                            rec_days = max(1, int(total_days * 0.20))
+                                            
+                                            t_due = today + timedelta(days=t_days)
+                                            r_due = t_due + timedelta(days=r_days)
+                                            rec_due = r_due + timedelta(days=rec_days)
+
+                                            s_t_due = t_due.strftime("%b %d")
+                                            s_r_due = r_due.strftime("%b %d")
+                                            s_rec_due = rec_due.strftime("%b %d")
+                                            s_final = sub_date.strftime("%b %d, %Y")
+
+                                            loads_t = {email: 0 for email in pool_t}
+                                            loads_r = {email: 0 for email in pool_r}
+
+                                            proposed_tasks = []
+                                            for ds in doc_stats:
+                                                a_t = min(loads_t, key=loads_t.get) if loads_t else ""
+                                                if a_t: loads_t[a_t] += ds['wc']
                                                 
-                                                del document
-                                                gc.collect()
-                                            except:
-                                                doc_stats.append({'id': d['id'], 'name': d['name'], 'wc': 500})
+                                                a_r = min(loads_r, key=loads_r.get)
+                                                loads_r[a_r] += ds['wc']
+                                                
+                                                init_status = STATUS_TRANS_ASSIGNED if a_t else STATUS_REV_ASSIGNED
+                                                proposed_tasks.append({
+                                                    'doc_id': ds['id'], 'doc_name': ds['name'], 'wc': ds['wc'],
+                                                    'translator': a_t, 'reviewer': a_r, 'recorder': "", 'status': init_status,
+                                                    's_final': s_final, 's_t_due': s_t_due, 's_r_due': s_r_due, 's_rec_due': s_rec_due
+                                                })
+
+                                            st.session_state["staging_proposal"] = {
+                                                "tasks": proposed_tasks,
+                                                "loads_t": loads_t,
+                                                "loads_r": loads_r
+                                            }
+                                            st.rerun()
+
+                        if st.session_state.get("staging_proposal"):
+                            st.divider()
+                            st.subheader("📋 3. Workload Staging Area")
+                            proposal = st.session_state["staging_proposal"]
+                            
+                            st.write("**Current Proposed Workload (Words):**")
+                            cols = st.columns(2)
+                            with cols[0]:
+                                st.markdown("**Translators**")
+                                for e, wc in proposal["loads_t"].items():
+                                    st.write(f"- {format_vol_label(e)}: {wc} words")
+                            with cols[1]:
+                                st.markdown("**Reviewers**")
+                                for e, wc in proposal["loads_r"].items():
+                                    st.write(f"- {format_vol_label(e)}: {wc} words")
+                                    
+                            st.write("**Task Breakdown:**")
+                            for pt in proposal["tasks"]:
+                                t_disp = format_vol_label(pt['translator']) if pt['translator'] else "🤖 AI Bypass"
+                                st.caption(f"📄 **{pt['doc_name']}** ({pt['wc']} words) ➔ T: {t_disp} | R: {format_vol_label(pt['reviewer'])}")
+                                
+                            c_app, c_can = st.columns(2)
+                            if c_app.button("✅ Approve & Dispatch", type="primary", width="stretch"):
+                                with st.spinner("Committing to database and dispatching emails..."):
+                                    emails_to_send = []
+                                    for pt in proposal["tasks"]:
+                                        assign_task_to_sheet(pt['doc_id'], pt['doc_name'], pt['translator'], pt['reviewer'], pt['recorder'], pt['status'], pt['s_final'], pt['s_t_due'], pt['s_r_due'], pt['s_rec_due'])
                                         
-                                        doc_stats.sort(key=lambda x: x['wc'], reverse=True)
-
-                                        today = datetime.today().date()
-                                        total_days = (sub_date - today).days
-                                        if total_days < 4: total_days = 4
+                                        t_n = vols.get(pt['translator'], {}).get("name", "")
+                                        r_n = vols.get(pt['reviewer'], {}).get("name", "")
                                         
-                                        t_days = max(1, int(total_days * 0.35))
-                                        r_days = max(1, int(total_days * 0.35))
-                                        rec_days = max(1, int(total_days * 0.20))
-                                        
-                                        t_due = today + timedelta(days=t_days)
-                                        r_due = t_due + timedelta(days=r_days)
-                                        rec_due = r_due + timedelta(days=rec_days)
-
-                                        s_t_due = t_due.strftime("%b %d")
-                                        s_r_due = r_due.strftime("%b %d")
-                                        s_rec_due = rec_due.strftime("%b %d")
-                                        s_final = sub_date.strftime("%b %d, %Y")
-
-                                        loads_t = {email: 0 for email in pool_t}
-                                        loads_r = {email: 0 for email in pool_r}
-                                        loads_rec = {email: 0 for email in pool_rec}
-
-                                        for ds in doc_stats:
-                                            a_t = min(loads_t, key=loads_t.get) if loads_t else ""
-                                            if a_t: loads_t[a_t] += ds['wc']
+                                        if pt['translator']:
+                                            emails_to_send.append(format_role_notification_email(pt['translator'], pt['doc_name'], pt['doc_id'], "Translation", t_n, r_n, "", pt['s_t_due']))
+                                        elif pt['reviewer']:
+                                            emails_to_send.append(format_role_notification_email(pt['reviewer'], pt['doc_name'], pt['doc_id'], "Review", t_n, r_n, "", pt['s_r_due']))
                                             
-                                            a_r = min(loads_r, key=loads_r.get)
-                                            loads_r[a_r] += ds['wc']
-                                            
-                                            a_rec = min(loads_rec, key=loads_rec.get) if loads_rec else ""
-                                            if a_rec: loads_rec[a_rec] += ds['wc']
-
-                                            init_status = STATUS_TRANS_ASSIGNED if a_t else STATUS_REV_ASSIGNED
-                                            assign_task_to_sheet(ds['id'], ds['name'], a_t, a_r, a_rec, init_status, s_final, s_t_due, s_r_due, s_rec_due)
-                                            
-                                            # --- AUTOMATED DISPATCH EMAILS ---
-                                            t_n = vols.get(a_t, {}).get("name", "")
-                                            r_n = vols.get(a_r, {}).get("name", "")
-                                            rec_n = vols.get(a_rec, {}).get("name", "")
-                                            
-                                            if a_t:
-                                                send_role_notification(a_t, ds['name'], ds['id'], "Translation", t_n, r_n, rec_n)
-                                            elif a_r:
-                                                send_role_notification(a_r, ds['name'], ds['id'], "Review", t_n, r_n, rec_n)
-                                        
-                                        st.success(f"Successfully integrated, assigned, and emailed the team for {len(doc_stats)} NEW articles!")
-                                        time.sleep(1.5)
-                                        st.rerun()
+                                    send_bulk_system_emails(emails_to_send)
+                                    
+                                    st.success(f"Successfully integrated {len(proposal['tasks'])} articles and dispatched emails!")
+                                    st.session_state["staging_proposal"] = None
+                                    time.sleep(1.5)
+                                    st.rerun()
+                                    
+                            if c_can.button("❌ Cancel / Adjust", width="stretch"):
+                                st.session_state["staging_proposal"] = None
+                                st.rerun()
                     else:
                         st.warning("No month subfolders found inside the selected year.")
                 else:
@@ -563,7 +641,6 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                 d_id = t.get("doc_id")
                 t_disp = format_vol_label(t.get("translator")) if t.get("translator") else "🤖 AI Bypass"
                 r_disp = format_vol_label(t.get("reviewer"))
-                # -- التعديل 1: إظهار أن المقالة معفاة من الصوت --
                 if t.get("recorder") == "SKIP_AUDIO":
                     rec_disp = "🚫 معفاة من التسجيل"
                 elif t.get("recorder"):
@@ -592,43 +669,42 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                             new_r = st.selectbox("Reviewer:", r_opts, index=r_opts.index(t.get("reviewer")) if t.get("reviewer") in r_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"r_{d_id}")
                             new_rec = st.selectbox("Recorder:", rec_opts, index=rec_opts.index(t.get("recorder")) if t.get("recorder") in rec_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"rec_{d_id}")
 
-                            # -- التعديل 2: إضافة خيار الإعفاء --
                             skip_audio = st.checkbox("🚫 إعفاء المقالة من التسجيل الصوتي", value=(t.get("recorder") == "SKIP_AUDIO"), key=f"skip_{d_id}")
                             
                             c_save, c_unlock = st.columns(2)
                             
                             if c_save.button("💾 Save Settings", key=f"b_up_{d_id}", type="primary", width="stretch"):
-                                # إذا تم تفعيل الإعفاء
                                 if skip_audio:
                                     new_rec = "SKIP_AUDIO"
-                                    # إذا كانت المقالة عالقة حالياً بانتظار مسجل، انقلها فوراً للجاهزية
                                     if new_s in [STATUS_REC_PENDING, STATUS_REC_ASSIGNED]:
                                         new_s = STATUS_REC_COMPLETED
 
                                 update_assignment_status(d_id, new_s)
                                 update_assignment_roles(d_id, new_t, new_r, new_rec)
 
-                                # --- Smart Detect & Auto-Email Logic ---
+                                # --- Smart Email Routing ---
                                 t_n = vols.get(new_t, {}).get("name", "")
                                 r_n = vols.get(new_r, {}).get("name", "")
                                 rec_n = vols.get(new_rec, {}).get("name", "")
 
-                                emails_sent = 0
-                                if new_t and new_t != t.get("translator"):
-                                    send_role_notification(new_t, t.get('doc_name'), d_id, "Translation", t_n, r_n, rec_n)
-                                    emails_sent += 1
-                                if new_r and new_r != t.get("reviewer"):
-                                    send_role_notification(new_r, t.get('doc_name'), d_id, "Review", t_n, r_n, rec_n)
-                                    emails_sent += 1
-                                # نتأكد أننا لا نرسل إيميل إذا كانت القيمة SKIP_AUDIO
-                                if new_rec and new_rec != "SKIP_AUDIO" and new_rec != t.get("recorder"):
-                                    send_role_notification(new_rec, t.get('doc_name'), d_id, "Recording", t_n, r_n, rec_n)
-                                    emails_sent += 1
+                                emails_to_send = []
 
-                                if emails_sent > 0:
-                                    st.toast(f"تم إرسال {emails_sent} إيميل للمتطوعين الجدد!", icon="📧")
+                                if new_t != t.get("translator"):
+                                    if t.get("translator"): emails_to_send.append(format_cancellation_email(t.get("translator"), t.get('doc_name'), "Translation"))
+                                    if new_t: emails_to_send.append(format_role_notification_email(new_t, t.get('doc_name'), d_id, "Translation", t_n, r_n, rec_n, t.get('t_due', '')))
+
+                                if new_r != t.get("reviewer"):
+                                    if t.get("reviewer"): emails_to_send.append(format_cancellation_email(t.get("reviewer"), t.get('doc_name'), "Review"))
+                                    if new_r: emails_to_send.append(format_role_notification_email(new_r, t.get('doc_name'), d_id, "Review", t_n, r_n, rec_n, t.get('r_due', '')))
+
+                                if new_rec != t.get("recorder"):
+                                    if t.get("recorder") and t.get("recorder") != "SKIP_AUDIO": emails_to_send.append(format_cancellation_email(t.get("recorder"), t.get('doc_name'), "Recording"))
+                                    if new_rec and new_rec != "SKIP_AUDIO": emails_to_send.append(format_role_notification_email(new_rec, t.get('doc_name'), d_id, "Recording", t_n, r_n, rec_n, t.get('rec_due', '')))
+
+                                if emails_to_send:
+                                    send_bulk_system_emails(emails_to_send)
+                                    st.toast(f"تم إرسال {len(emails_to_send)} إيميل (تعيين وإلغاء)!", icon="📧")
                                     time.sleep(1.5)
-                                # ---------------------------------------
                                 
                                 st.rerun()
                             
@@ -638,7 +714,6 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                                         res = sheets_service.spreadsheets().values().get(spreadsheetId=GLOSSARY_SPREADSHEET_ID, range=SESSIONS_RANGE).execute()
                                         for index, row in enumerate(res.get("values", [])):
                                             if len(row) > 0 and row[0] == doc_id:
-                                                # التعديل: مسح الإيميل والوقت فقط دون المساس ببيانات JSON (يسمح بتوريث التقدم)
                                                 sheets_service.spreadsheets().values().update(
                                                     spreadsheetId=GLOSSARY_SPREADSHEET_ID, 
                                                     range=f"'Sessions'!B{index + 1}:C{index + 1}", 
@@ -674,13 +749,11 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                 raise Exception(response.get("message", "Unknown GAS Error"))
 
         if ready_tasks:
-            # التعديل: حساب عدد الملفات الفعلية (مقال + صوت لكل مهمة)
             total_files = sum(2 if rt.get("audio_link") else 1 for rt in ready_tasks)
             
             st.markdown(f"**{len(ready_tasks)} Tasks Ready ({total_files} Total Files to Transfer):**")
             client_email = st.text_input("📧 CC Client Email (Optional - Leave blank to only notify Admin):")
             
-            # --- BATCH DEPLOYMENT BUTTON ---
             if len(ready_tasks) > 1:
                 if st.button(f"🚀 Deploy ALL {total_files} Files", type="primary", use_container_width=True):
                     sub_id = extract_id_from_url(sub_link)
@@ -695,11 +768,9 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                                     proxy_deploy_to_gas(rt.get("doc_id"), rt.get("doc_name"), rt.get("audio_link"), sub_id)
                                     update_assignment_status(rt.get("doc_id"), STATUS_SUBMITTED)
                                     
-                                    # توثيق نقل المقالة
                                     success_files_count += 1
                                     deployed_names.append(f"📄 [Final Arabic] {rt.get('doc_name')}")
                                     
-                                    # توثيق نقل الملف الصوتي
                                     if rt.get("audio_link"):
                                         success_files_count += 1
                                         deployed_names.append(f"🎙️ [Audio] {rt.get('doc_name')}.mp3")
@@ -707,7 +778,6 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                                 except Exception as e:
                                     st.error(f"Failed to transfer '{rt.get('doc_name')}': {e}")
                             
-                            # Send 1 Consolidated Email Receipt with individual files
                             if success_files_count > 0:
                                 admin_mail = st.secrets.get("ADMIN_EMAIL", "")
                                 doc_list = "\n".join([f"- {name}" for name in deployed_names])
@@ -722,7 +792,6 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                                 st.rerun()
             st.markdown("---")
         
-            # --- INDIVIDUAL ASSET CARDS ---
             for rt in ready_tasks:
                 with st.container(border=True):
                     cd1, cd2 = st.columns([4, 1])
@@ -1662,9 +1731,8 @@ if approved_count == total_segments and total_segments > 0:
                             t_n = vols.get(t_email, {}).get("name", "")
                             r_n = vols.get(r_email, {}).get("name", "")
                             rec_n = vols.get(rec_email, {}).get("name", "")
-                            send_role_notification(r_email, fresh_task.get('doc_name'), file_id, "Review", t_n, r_n, rec_n)
+                            send_bulk_system_emails([format_role_notification_email(r_email, fresh_task.get('doc_name'), file_id, "Review", t_n, r_n, rec_n, fresh_task.get('r_due', ''))])
                     else: 
-                        # التعديل الجديد للمراجع: فحص هل المقالة معفاة من الصوت؟
                         if rec_email == "SKIP_AUDIO":
                             new_status = STATUS_REC_COMPLETED
                         else:
@@ -1675,7 +1743,7 @@ if approved_count == total_segments and total_segments > 0:
                             t_n = vols.get(t_email, {}).get("name", "")
                             r_n = vols.get(r_email, {}).get("name", "")
                             rec_n = vols.get(rec_email, {}).get("name", "")
-                            send_role_notification(rec_email, fresh_task.get('doc_name'), file_id, "Recording", t_n, r_n, rec_n)
+                            send_bulk_system_emails([format_role_notification_email(rec_email, fresh_task.get('doc_name'), file_id, "Recording", t_n, r_n, rec_n, fresh_task.get('rec_due', ''))])
                     
                     update_assignment_status(file_id, new_status)
                     
