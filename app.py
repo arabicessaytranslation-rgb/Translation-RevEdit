@@ -141,7 +141,7 @@ ALL_STATUSES = [
     STATUS_REC_COMPLETED, STATUS_SUBMITTED
 ]
 
-BATCH_SIZE = 10
+BATCH_SIZE = 5 # Reduced to 5 to prevent Omission Hallucinations safely via dual APIs
 MAX_RETRIES_PER_MODEL = 3
 BASE_BACKOFF_SECONDS = 2.0
 MAX_BACKOFF_SECONDS = 15.0
@@ -467,7 +467,7 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                             if st.button("📦 Move Selected to Dump Folder", type="primary"):
                                 if docs_to_trash:
                                     with st.spinner("Routing files to the Dump folder..."):
-                                        # Your dedicated global Dump folder ID
+                                        # Dedicated global Dump folder ID
                                         DUMP_FOLDER_ID = "11A02NlrTcDmqzluBSYgur44ERiosd6GE"
                                         
                                         for d_name in docs_to_trash:
@@ -1265,6 +1265,8 @@ MANDATORY GLOSSARY ENFORCEMENT:
 - Whenever an English recovery term matches the glossary, you MUST use the exact Arabic term provided. Never substitute it with synonyms.
 - Document every matched term transparently in 'glossary_notes'.
 
+CRITICAL DIRECTIVE: You are strictly forbidden from summarizing, condensing, or skipping any text. You must translate every single sentence comprehensively. If a paragraph is long, process it line-by-line to ensure zero data loss.
+
 OFFICIAL GLOSSARY:
 {glossary_text}
 
@@ -1290,6 +1292,8 @@ YOUR EDITORIAL CRITERIA:
 1. Spiritual & Emotional Integrity: Ensure the Arabic translation captures the exact nuance of the original English—neither diluting its psychological gravity nor turning it into moralistic preaching.
 2. Narrative Flow & Arabic Idiom: Ensure sentences flow naturally with proper Arabic syntax, punctuation, and rhythm. Eliminate clunky translative traces.
 3. Strict Terminology Audit: Verify that recovery concepts strictly adhere to the official glossary. If a term misses the specific fellowship consensus, correct it to the exact glossary equivalent and explain the recovery rationale in 'reasoning'.
+
+CRITICAL DIRECTIVE: You are strictly forbidden from summarizing, condensing, or skipping any text. You must review and reconstruct every single sentence comprehensively to ensure zero data loss.
 
 OFFICIAL GLOSSARY:
 {glossary_text}
@@ -1326,6 +1330,8 @@ MANDATORY GLOSSARY ENFORCEMENT:
 - Whenever an English recovery term matches the glossary, you MUST use the exact Arabic term provided. Never substitute it with synonyms.
 - In 'glossary_notes', explicitly list every glossary term matched and applied (e.g., "recovery -> تعافي"). If none, write "None".
 
+CRITICAL DIRECTIVE: You are strictly forbidden from summarizing, condensing, or skipping any text. You must translate every single sentence comprehensively. If a paragraph is long, process it line-by-line to ensure zero data loss.
+
 OFFICIAL GLOSSARY:
 {glossary_text}
 
@@ -1360,6 +1366,8 @@ YOUR EDITORIAL CRITERIA FOR THIS BATCH:
 3. Strict Terminology Audit: Verify that recovery concepts strictly adhere to the official glossary. If a term misses the specific fellowship consensus, correct it to the exact glossary equivalent and explain the recovery rationale in 'reasoning'.
 4. Status Assignment: 'perfect' (no edits needed), 'minor_edits' (small grammar/term corrections), 'major_rewrite' (missed core meaning or severely awkward).
 
+CRITICAL DIRECTIVE: You are strictly forbidden from summarizing, condensing, or skipping any text. You must review and reconstruct every single sentence comprehensively to ensure zero data loss.
+
 OFFICIAL GLOSSARY:
 {glossary_text}
 
@@ -1389,13 +1397,16 @@ def _parse_docs_elements(elements):
         if "paragraph" in elem:
             para_text = ""
             for run in elem.get("paragraph", {}).get("elements", []):
-                if "textRun" in run: para_text += run.get("textRun", {}).get("content", "")
+                if "textRun" in run: 
+                    para_text += run.get("textRun", {}).get("content", "")
             clean_text = para_text.strip()
-            if bool(re.search(r"[a-zA-Z\u0600-\u06FF]", clean_text)):
+            # Updated Regex includes 0-9 to prevent dropping numerical lines
+            if bool(re.search(r"[a-zA-Z0-9\u0600-\u06FF]", clean_text)):
                 paras.append({"text": clean_text, "start": elem.get("startIndex"), "end": elem.get("endIndex")})
         elif "table" in elem:
             for row in elem.get("table", {}).get("tableRows", []):
-                for cell in row.get("tableCells", []): paras.extend(_parse_docs_elements(cell.get("content", [])))
+                for cell in row.get("tableCells", []): 
+                    paras.extend(_parse_docs_elements(cell.get("content", [])))
     return paras
 
 def extract_text_from_drive(file_id: str, is_retry=False):
@@ -1406,13 +1417,20 @@ def extract_text_from_drive(file_id: str, is_retry=False):
         if file_meta.get("mimeType") == "application/vnd.google-apps.document":
             try: document = docs_svc.documents().get(documentId=file_id, includeTabsContent=True).execute()
             except: document = docs_svc.documents().get(documentId=file_id).execute()
+            
             all_paras = []
             def sweep_doc_obj(doc_obj):
                 tp = []
                 tp.extend(_parse_docs_elements(doc_obj.get("body", {}).get("content", [])))
-                for footer in doc_obj.get("footers", {}).values(): tp.extend(_parse_docs_elements(footer.get("content", [])))
-                for header in doc_obj.get("headers", {}).values(): tp.extend(_parse_docs_elements(header.get("content", [])))
+                # Added footnotes sweep loop to prevent data omission
+                for footnote in doc_obj.get("footnotes", {}).values(): 
+                    tp.extend(_parse_docs_elements(footnote.get("content", [])))
+                for footer in doc_obj.get("footers", {}).values(): 
+                    tp.extend(_parse_docs_elements(footer.get("content", [])))
+                for header in doc_obj.get("headers", {}).values(): 
+                    tp.extend(_parse_docs_elements(header.get("content", [])))
                 return tp
+                
             tabs = document.get("tabs", [])
             if tabs:
                 for tab in tabs: all_paras.extend(sweep_doc_obj(tab.get("documentTab", {})))
