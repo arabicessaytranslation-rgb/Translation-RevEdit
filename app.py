@@ -1396,13 +1396,28 @@ def _parse_docs_elements(elements):
     for elem in elements:
         if "paragraph" in elem:
             para_text = ""
+            
+            # 1. FIX: Detect List Bullets/Numbers and prepend a marker
+            bullet_prefix = ""
+            if "bullet" in elem.get("paragraph", {}):
+                bullet_prefix = "• "
+
             for run in elem.get("paragraph", {}).get("elements", []):
+                # Standard text
                 if "textRun" in run: 
                     para_text += run.get("textRun", {}).get("content", "")
-            clean_text = para_text.strip()
-            # Updated Regex includes 0-9 to prevent dropping numerical lines
-            if bool(re.search(r"[a-zA-Z0-9\u0600-\u06FF]", clean_text)):
+                # 3. FIX: Capture Google Docs Smart Chips to prevent blank holes
+                elif "richLink" in run:
+                    para_text += run.get("richLink", {}).get("richLinkProperties", {}).get("title", "")
+                elif "person" in run:
+                    para_text += run.get("person", {}).get("personProperties", {}).get("name", "")
+                    
+            clean_text = bullet_prefix + para_text.strip()
+            
+            # 2. FIX: Regex expanded to include symbols for scene breaks (*, -, =)
+            if bool(re.search(r"[a-zA-Z0-9\u0600-\u06FF\*\-\=]", clean_text)):
                 paras.append({"text": clean_text, "start": elem.get("startIndex"), "end": elem.get("endIndex")})
+        
         elif "table" in elem:
             for row in elem.get("table", {}).get("tableRows", []):
                 for cell in row.get("tableCells", []): 
