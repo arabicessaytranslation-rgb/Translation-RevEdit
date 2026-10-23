@@ -460,17 +460,31 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                             st.success("✅ All documents in this folder are already assigned or processed. No new tasks to add.")
                         else:
                             st.divider()
-                            st.write("### 🧹 Pre-Dispatch Audit & Trash")
-                            docs_to_trash = st.multiselect("Select irrelevant files to permanently move to Drive Trash:", [d['name'] for d in new_docs])
-                            if st.button("🗑️ Move Selected to Trash", type="primary"):
+                            st.write("### 🧹 Pre-Dispatch Audit & Clean-up")
+                            st.caption("Selected files will be moved to the global 'Dump' folder to keep your main workspace clean.")
+                            docs_to_trash = st.multiselect("Select irrelevant files to discard:", [d['name'] for d in new_docs])
+                            
+                            if st.button("📦 Move Selected to Dump Folder", type="primary"):
                                 if docs_to_trash:
-                                    with st.spinner("Trashing files..."):
+                                    with st.spinner("Routing files to the Dump folder..."):
+                                        # Your dedicated global Dump folder ID
+                                        DUMP_FOLDER_ID = "11A02NlrTcDmqzluBSYgur44ERiosd6GE"
+                                        
                                         for d_name in docs_to_trash:
                                             d_id = next(d['id'] for d in new_docs if d['name'] == d_name)
-                                            drive_service.files().update(fileId=d_id, body={'trashed': True}).execute()
-                                    st.success("Files trashed successfully!")
+                                            # Eject from the working month folder and inject into the Dump folder
+                                            drive_service.files().update(
+                                                fileId=d_id,
+                                                addParents=DUMP_FOLDER_ID,
+                                                removeParents=month_id,
+                                                fields='id, parents'
+                                            ).execute()
+                                            
+                                    st.success(f"Successfully moved {len(docs_to_trash)} files to the Dump folder!")
                                     time.sleep(1.5)
                                     st.rerun()
+                                else:
+                                    st.warning("Please select at least one document to discard.")
 
                             valid_docs = [d for d in new_docs if d['name'] not in docs_to_trash]
                             
