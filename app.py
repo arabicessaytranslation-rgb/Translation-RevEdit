@@ -13,6 +13,7 @@ from googleapiclient.discovery import build
 import pandas as pd
 from pydantic import BaseModel, Field
 import streamlit as st
+import streamlit.components.v1 as components
 import base64
 import gc
 
@@ -111,6 +112,20 @@ def apply_custom_css():
     )
 
 apply_custom_css()
+
+# --- Prevent Accidental Refresh / Back Button Data Loss ---
+components.html(
+    """
+    <script>
+    window.parent.addEventListener('beforeunload', function (e) {
+        e.preventDefault();
+        e.returnValue = '';
+    });
+    </script>
+    """,
+    height=0,
+    width=0,
+)
 
 GLOSSARY_SPREADSHEET_ID = "1oc4TCY_iK9R7mBiXgb5rKWssjmrQywYg6UpOBXx8pUQ"
 GLOSSARY_RANGE = "'المصطلحات'!A:D"
@@ -393,6 +408,7 @@ if "session_row_index" not in st.session_state: st.session_state["session_row_in
 if "active_task" not in st.session_state: st.session_state["active_task"] = None
 if "admin_last_refresh" not in st.session_state: st.session_state["admin_last_refresh"] = 0
 if "staging_proposal" not in st.session_state: st.session_state["staging_proposal"] = None
+if "completed_task_ids" not in st.session_state: st.session_state["completed_task_ids"] = []
 
 # ==========================================
 # 3. COORDINATOR HUB (ADMIN DASHBOARD)
@@ -479,7 +495,7 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                                                 removeParents=month_id,
                                                 fields='id, parents'
                                             ).execute()
-                                            
+                                        
                                     st.success(f"Successfully moved {len(docs_to_trash)} files to the Dump folder!")
                                     time.sleep(1.5)
                                     st.rerun()
@@ -587,25 +603,29 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                                 
                             c_app, c_can = st.columns(2)
                             if c_app.button("✅ Approve & Dispatch", type="primary", width="stretch"):
-                                with st.spinner("Committing to database and dispatching emails..."):
-                                    emails_to_send = []
-                                    for pt in proposal["tasks"]:
-                                        assign_task_to_sheet(pt['doc_id'], pt['doc_name'], pt['translator'], pt['reviewer'], pt['recorder'], pt['status'], pt['s_final'], pt['s_t_due'], pt['s_r_due'], pt['s_rec_due'])
-                                        
-                                        t_n = vols.get(pt['translator'], {}).get("name", "")
-                                        r_n = vols.get(pt['reviewer'], {}).get("name", "")
-                                        
-                                        if pt['translator']:
-                                            emails_to_send.append(format_role_notification_email(pt['translator'], pt['doc_name'], pt['doc_id'], "Translation", t_n, r_n, "", pt['s_t_due']))
-                                        elif pt['reviewer']:
-                                            emails_to_send.append(format_role_notification_email(pt['reviewer'], pt['doc_name'], pt['doc_id'], "Review", t_n, r_n, "", pt['s_r_due']))
+                                # Capture proposal and instantly clear memory to block double-clicks
+                                active_proposal = st.session_state.get("staging_proposal")
+                                st.session_state["staging_proposal"] = None 
+                                
+                                if active_proposal:
+                                    with st.spinner("Committing to database and dispatching emails..."):
+                                        emails_to_send = []
+                                        for pt in active_proposal["tasks"]:
+                                            assign_task_to_sheet(pt['doc_id'], pt['doc_name'], pt['translator'], pt['reviewer'], pt['recorder'], pt['status'], pt['s_final'], pt['s_t_due'], pt['s_r_due'], pt['s_rec_due'])
                                             
-                                    send_bulk_system_emails(emails_to_send)
-                                    
-                                    st.success(f"Successfully integrated {len(proposal['tasks'])} articles and dispatched emails!")
-                                    st.session_state["staging_proposal"] = None
-                                    time.sleep(1.5)
-                                    st.rerun()
+                                            t_n = vols.get(pt['translator'], {}).get("name", "")
+                                            r_n = vols.get(pt['reviewer'], {}).get("name", "")
+                                            
+                                            if pt['translator']:
+                                                emails_to_send.append(format_role_notification_email(pt['translator'], pt['doc_name'], pt['doc_id'], "Translation", t_n, r_n, "", pt['s_t_due']))
+                                            elif pt['reviewer']:
+                                                emails_to_send.append(format_role_notification_email(pt['reviewer'], pt['doc_name'], pt['doc_id'], "Review", t_n, r_n, "", pt['s_r_due']))
+                                                
+                                        send_bulk_system_emails(emails_to_send)
+                                        
+                                        st.success(f"Successfully integrated {len(active_proposal['tasks'])} articles and dispatched emails!")
+                                        time.sleep(1.5)
+                                        st.rerun()
                                     
                             if c_can.button("❌ Cancel / Adjust", width="stretch"):
                                 st.session_state["staging_proposal"] = None
@@ -679,22 +699,34 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                             r_opts = [""] + [e for e, d in vols.items() if "reviewer" in d.get("role") and d.get("status", "").lower() == "active"]
                             rec_opts = [""] + [e for e, d in vols.items() if "recorder" in d.get("role") and d.get("status", "").lower() == "active"]
                             
-                            new_t = st.selectbox("Translator:", t_opts, index=t_opts.index(t.get("translator")) if t.get("translator") in t_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"t_{d_id}")
-                            new_r = st.selectbox("Reviewer:", r_opts, index=r_opts.index(t.get("reviewer")) if t.get("reviewer") in r_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"r_{d_id}")
-                            new_rec = st.selectbox("Recorder:", rec_opts, index=rec_opts.index(t.get("recorder")) if t.get("recorder") in rec_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"rec_{d_id}")
+                            ct1, ct2 = st.columns([2, 1])
+                            new_t = ct1.selectbox("Translator:", t_opts, index=t_opts.index(t.get("translator")) if t.get("translator") in t_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"t_{d_id}")
+                            new_t_due = ct2.text_input("T Due:", value=t.get("t_due", ""), placeholder="Oct 24", key=f"tdue_{d_id}")
+                            
+                            cr1, cr2 = st.columns([2, 1])
+                            new_r = cr1.selectbox("Reviewer:", r_opts, index=r_opts.index(t.get("reviewer")) if t.get("reviewer") in r_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"r_{d_id}")
+                            new_r_due = cr2.text_input("R Due:", value=t.get("r_due", ""), placeholder="Oct 28", key=f"rdue_{d_id}")
+                            
+                            crec1, crec2 = st.columns([2, 1])
+                            new_rec = crec1.selectbox("Recorder:", rec_opts, index=rec_opts.index(t.get("recorder")) if t.get("recorder") in rec_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"rec_{d_id}")
+                            new_rec_due = crec2.text_input("Rec Due:", value=t.get("rec_due", ""), placeholder="Nov 02", key=f"recdue_{d_id}")
 
                             skip_audio = st.checkbox("🚫 إعفاء المقالة من التسجيل الصوتي", value=(t.get("recorder") == "SKIP_AUDIO"), key=f"skip_{d_id}")
                             
                             c_save, c_unlock = st.columns(2)
                             
                             if c_save.button("💾 Save Settings", key=f"b_up_{d_id}", type="primary", width="stretch"):
+                                if st.session_state.get(f"saving_{d_id}"):
+                                    st.stop()
+                                st.session_state[f"saving_{d_id}"] = True
+
                                 if skip_audio:
                                     new_rec = "SKIP_AUDIO"
                                     if new_s in [STATUS_REC_PENDING, STATUS_REC_ASSIGNED]:
                                         new_s = STATUS_REC_COMPLETED
 
-                                update_assignment_status(d_id, new_s)
-                                update_assignment_roles(d_id, new_t, new_r, new_rec)
+                                # assign_task_to_sheet safely overwrites the exact row, updating all roles and deadlines simultaneously
+                                assign_task_to_sheet(d_id, t.get('doc_name'), new_t, new_r, new_rec, new_s, t.get('final_due'), new_t_due, new_r_due, new_rec_due)
 
                                 # --- Smart Email Routing ---
                                 t_n = vols.get(new_t, {}).get("name", "")
@@ -705,21 +737,22 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
 
                                 if new_t != t.get("translator"):
                                     if t.get("translator"): emails_to_send.append(format_cancellation_email(t.get("translator"), t.get('doc_name'), "Translation"))
-                                    if new_t: emails_to_send.append(format_role_notification_email(new_t, t.get('doc_name'), d_id, "Translation", t_n, r_n, rec_n, t.get('t_due', '')))
+                                    if new_t: emails_to_send.append(format_role_notification_email(new_t, t.get('doc_name'), d_id, "Translation", t_n, r_n, rec_n, new_t_due))
 
                                 if new_r != t.get("reviewer"):
                                     if t.get("reviewer"): emails_to_send.append(format_cancellation_email(t.get("reviewer"), t.get('doc_name'), "Review"))
-                                    if new_r: emails_to_send.append(format_role_notification_email(new_r, t.get('doc_name'), d_id, "Review", t_n, r_n, rec_n, t.get('r_due', '')))
+                                    if new_r: emails_to_send.append(format_role_notification_email(new_r, t.get('doc_name'), d_id, "Review", t_n, r_n, rec_n, new_r_due))
 
                                 if new_rec != t.get("recorder"):
                                     if t.get("recorder") and t.get("recorder") != "SKIP_AUDIO": emails_to_send.append(format_cancellation_email(t.get("recorder"), t.get('doc_name'), "Recording"))
-                                    if new_rec and new_rec != "SKIP_AUDIO": emails_to_send.append(format_role_notification_email(new_rec, t.get('doc_name'), d_id, "Recording", t_n, r_n, rec_n, t.get('rec_due', '')))
+                                    if new_rec and new_rec != "SKIP_AUDIO": emails_to_send.append(format_role_notification_email(new_rec, t.get('doc_name'), d_id, "Recording", t_n, r_n, rec_n, new_rec_due))
 
                                 if emails_to_send:
                                     send_bulk_system_emails(emails_to_send)
                                     st.toast(f"تم إرسال {len(emails_to_send)} إيميل (تعيين وإلغاء)!", icon="📧")
                                     time.sleep(1.5)
                                 
+                                st.session_state[f"saving_{d_id}"] = False
                                 st.rerun()
                             
                             if c_unlock.button("🔓 Unlock Session", key=f"unlock_{d_id}", width="stretch"):
@@ -1016,6 +1049,10 @@ if not st.session_state.get("source_file_id") and st.session_state.get("app_mode
     # Dynamic Workspace Routing (Ignores global role, focuses on active task phase)
     usr_email = st.session_state.get("user_email")
     for task in assignments:
+        # --- Mask Google Server Latency ---
+        if task.get("doc_id") in st.session_state.get("completed_task_ids", []):
+            continue
+            
         t_status = task.get("status")
         
         if task.get("translator") == usr_email and t_status in [STATUS_TRANS_ASSIGNED, STATUS_TRANS_STARTED]:
@@ -1290,7 +1327,7 @@ def review_with_ai(english: str, arabic: str, glossary_text: str):
 
 YOUR EDITORIAL CRITERIA:
 1. Spiritual & Emotional Integrity: Ensure the Arabic translation captures the exact nuance of the original English—neither diluting its psychological gravity nor turning it into moralistic preaching.
-2. Narrative Flow & Arabic Idiom: Ensure sentences flow naturally with proper Arabic syntax, punctuation, and rhythm. Eliminate clunky translative traces.
+​2. Narrative Flow & Arabic Idiom: Ensure sentences flow naturally with proper Arabic syntax, punctuation, and rhythm. Eliminate clunky translative traces.
 3. Strict Terminology Audit: Verify that recovery concepts strictly adhere to the official glossary. If a term misses the specific fellowship consensus, correct it to the exact glossary equivalent and explain the recovery rationale in 'reasoning'.
 
 CRITICAL DIRECTIVE: You are strictly forbidden from summarizing, condensing, or skipping any text. You must review and reconstruct every single sentence comprehensively to ensure zero data loss.
@@ -1362,7 +1399,7 @@ def review_batch_with_fallback(batch_segments, glossary_text):
 
 YOUR EDITORIAL CRITERIA FOR THIS BATCH:
 1. Spiritual & Emotional Integrity: Ensure the Arabic translation captures the exact nuance of the original English—neither diluting its psychological gravity nor turning it into moralistic preaching.
-2. Narrative Flow & Arabic Idiom: Ensure sentences flow naturally with proper Arabic syntax, punctuation, and rhythm. Eliminate clunky translative traces.
+​2. Narrative Flow & Arabic Idiom: Ensure sentences flow naturally with proper Arabic syntax, punctuation, and rhythm. Eliminate clunky translative traces.
 3. Strict Terminology Audit: Verify that recovery concepts strictly adhere to the official glossary. If a term misses the specific fellowship consensus, correct it to the exact glossary equivalent and explain the recovery rationale in 'reasoning'.
 4. Status Assignment: 'perfect' (no edits needed), 'minor_edits' (small grammar/term corrections), 'major_rewrite' (missed core meaning or severely awkward).
 
@@ -1793,6 +1830,9 @@ if approved_count == total_segments and total_segments > 0:
                             send_bulk_system_emails([format_role_notification_email(rec_email, fresh_task.get('doc_name'), file_id, "Recording", t_n, r_n, rec_n, fresh_task.get('rec_due', ''))])
                     
                     update_assignment_status(file_id, new_status)
+                    
+                    # --- Tell local memory it is done ---
+                    st.session_state["completed_task_ids"].append(file_id)
                     
                     # سيتم إخلاء الجلسة وتنظيف الخانات بالكامل بنجاح
                     release_document_lock(st.session_state.get("session_row_index"))
