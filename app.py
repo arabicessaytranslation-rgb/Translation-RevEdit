@@ -281,7 +281,7 @@ def fetch_assignments():
                     "doc_name": r[1],
                     "translator": r[2].lower().strip(),
                     "reviewer": r[3].lower().strip(),
-                    "recorder": r[4].lower().strip(),
+                    "recorder": r[4].strip() if r[4].strip().upper() == "SKIP_AUDIO" else r[4].lower().strip(),
                     "status": r[5],
                     "final_due": r[6],
                     "audio_link": r[7],
