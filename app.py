@@ -699,17 +699,26 @@ if st.session_state.get("app_mode") == "Coordinator Hub" and not st.session_stat
                             r_opts = [""] + [e for e, d in vols.items() if "reviewer" in d.get("role") and d.get("status", "").lower() == "active"]
                             rec_opts = [""] + [e for e, d in vols.items() if "recorder" in d.get("role") and d.get("status", "").lower() == "active"]
                             
+                            # Helper to convert sheet text ("Oct 24") into calendar objects
+                            def parse_sheet_date(d_str):
+                                if not d_str: return None
+                                try: return datetime.strptime(f"{d_str} {datetime.today().year}", "%b %d %Y").date()
+                                except: return None
+
                             ct1, ct2 = st.columns([2, 1])
                             new_t = ct1.selectbox("Translator:", t_opts, index=t_opts.index(t.get("translator")) if t.get("translator") in t_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"t_{d_id}")
-                            new_t_due = ct2.text_input("T Due:", value=t.get("t_due", ""), placeholder="Oct 24", key=f"tdue_{d_id}")
+                            t_date = ct2.date_input("T Due:", value=parse_sheet_date(t.get("t_due", "")), key=f"tdue_{d_id}")
+                            new_t_due = t_date.strftime("%b %d") if t_date else ""
                             
                             cr1, cr2 = st.columns([2, 1])
                             new_r = cr1.selectbox("Reviewer:", r_opts, index=r_opts.index(t.get("reviewer")) if t.get("reviewer") in r_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"r_{d_id}")
-                            new_r_due = cr2.text_input("R Due:", value=t.get("r_due", ""), placeholder="Oct 28", key=f"rdue_{d_id}")
+                            r_date = cr2.date_input("R Due:", value=parse_sheet_date(t.get("r_due", "")), key=f"rdue_{d_id}")
+                            new_r_due = r_date.strftime("%b %d") if r_date else ""
                             
                             crec1, crec2 = st.columns([2, 1])
                             new_rec = crec1.selectbox("Recorder:", rec_opts, index=rec_opts.index(t.get("recorder")) if t.get("recorder") in rec_opts else 0, format_func=lambda x: format_vol_label(x) if x else "Unassigned", key=f"rec_{d_id}")
-                            new_rec_due = crec2.text_input("Rec Due:", value=t.get("rec_due", ""), placeholder="Nov 02", key=f"recdue_{d_id}")
+                            rec_date = crec2.date_input("Rec Due:", value=parse_sheet_date(t.get("rec_due", "")), key=f"recdue_{d_id}")
+                            new_rec_due = rec_date.strftime("%b %d") if rec_date else ""
 
                             skip_audio = st.checkbox("🚫 إعفاء المقالة من التسجيل الصوتي", value=(t.get("recorder") == "SKIP_AUDIO"), key=f"skip_{d_id}")
                             
