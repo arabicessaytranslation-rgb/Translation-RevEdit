@@ -1,5 +1,4 @@
 import base64
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 import difflib
 from email.message import EmailMessage
@@ -166,10 +165,9 @@ ADMIN_STAGES = [
 ]
 
 BATCH_SIZE = 5  # Kept at 5 to prevent omission hallucinations
-MAX_PARALLEL_WORKERS = 2  # Balanced concurrency to avoid Gemini free-tier RPM spikes
 MAX_RETRIES_PER_MODEL = 3
-BASE_BACKOFF_SECONDS = 1.5
-MAX_BACKOFF_SECONDS = 8.0
+BASE_BACKOFF_SECONDS = 2.0
+MAX_BACKOFF_SECONDS = 15.0
 RETRYABLE_KEYWORDS = ("503", "500", "high demand", "429", "timeout", "quota", "resource_exhausted")
 
 # ==========================================
@@ -490,6 +488,8 @@ if "admin_last_refresh" not in st.session_state:
     st.session_state["admin_last_refresh"] = 0
 if "staging_proposal" not in st.session_state:
     st.session_state["staging_proposal"] = None
+if "last_ai_error" not in st.session_state:
+    st.session_state["last_ai_error"] = ""
 
 # ==========================================
 # 3. COORDINATOR HUB (ADMIN DASHBOARD)
@@ -1279,7 +1279,7 @@ if not st.session_state.get("source_file_id") and st.session_state.get("app_mode
 
 
 # ==========================================
-# 5. AI ENGINE & DOCUMENT PARSING
+# 5. AI ENGINE & DOCUMENT PARSING (RESTORED FROM APP 4 + ERROR VISIBILITY)
 # ==========================================
 safety_settings = []
 if GENAI_AVAILABLE:
@@ -1306,8 +1306,7 @@ def get_gemini_client(api_key=None):
     keys = get_api_key_list()
     if not keys:
         return None
-    chosen_key = api_key if api_key else random.choice(keys)
-    return genai.Client(api_key=chosen_key)
+    return genai.Client(api_key=api_key if api_key else random.choice(keys))
 
 class TranslationResult(BaseModel):
     arabic_translation: str = Field(description="The finalized Arabic translation")
@@ -1338,10 +1337,27 @@ class ReviewBatchResult(BaseModel):
 @st.cache_resource(ttl=3600)
 def get_fallback_models():
     secret_model = st.secrets.get("ACTIVE_MODEL", "").strip()
-    defaults = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+    discovered = []
+    client = get_gemini_client()
+    if GENAI_AVAILABLE and client is not None:
+        try:
+            for m in client.models.list():
+                clean_name = m.name.replace("models/", "")
+                if "flash" in clean_name.lower() and not any(tag in clean_name.lower() for tag in ["legacy", "embed", "imagen", "tts", "audio", "live"]):
+                    discovered.append(clean_name)
+            discovered.sort(reverse=True)
+        except Exception:
+            pass
+
+    models = []
     if secret_model:
-        return [secret_model] + [m for m in defaults if m != secret_model]
-    return defaults
+        models.append(secret_model)
+    for m in discovered:
+        if m not in models:
+            models.append(m)
+    if not models:
+        models = ["gemini-2.5-flash", "gemini-1.5-flash"]
+    return models
 
 def manage_document_lock(file_id: str, user_email: str):
     try:
@@ -1487,34 +1503,19 @@ def _is_retryable(err_str):
 def _backoff_sleep(attempt):
     time.sleep(min(BASE_BACKOFF_SECONDS * (2 ** attempt), MAX_BACKOFF_SECONDS))
 
-def _build_thinking_config(model_name):
-    try:
-        if "2.5" in model_name:
-            return types.ThinkingConfig(thinking_budget=512)
-        if "3" in model_name:
-            return types.ThinkingConfig(thinking_level="low")
-        return None
-    except Exception:
-        return None
-
-def _call_gemini(model_name, prompt, schema_type, api_key=None):
-    client = get_gemini_client(api_key=api_key)
+def _call_gemini(model_name, prompt, schema_type):
+    client = get_gemini_client()
     if not client:
-        raise ValueError("No Gemini API keys configured.")
-
-    config_kwargs = {
-        "response_mime_type": "application/json",
-        "response_schema": schema_type,
-        "safety_settings": safety_settings,
-        "temperature": 0.2,
-    }
-    t_cfg = _build_thinking_config(model_name)
-    if t_cfg is not None:
-        config_kwargs["thinking_config"] = t_cfg
-
+        raise ValueError("No Gemini API keys configured in Streamlit Secrets.")
     response = client.models.generate_content(
-        model=model_name, contents=prompt,
-        config=types.GenerateContentConfig(**config_kwargs),
+        model=model_name,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=schema_type,
+            safety_settings=safety_settings,
+            temperature=0.2,
+        ),
     )
     clean_text = response.text.replace("```json", "").replace("```", "").strip()
     match = re.search(r"\{.*\}", clean_text, re.DOTALL)
@@ -1522,28 +1523,8 @@ def _call_gemini(model_name, prompt, schema_type, api_key=None):
         clean_text = match.group(0)
     return json.loads(clean_text)
 
-def _call_with_key_rotation(prompt, schema_type, models, api_keys, max_attempts=3):
-    if not api_keys:
-        raise ValueError("No Gemini API keys configured.")
-    num_keys = len(api_keys)
-    start_idx = random.randrange(num_keys)
-    attempts_per_model = max(max_attempts, num_keys)
-    for model_name in models:
-        for attempt in range(attempts_per_model):
-            key = api_keys[(start_idx + attempt) % num_keys]
-            try:
-                return _call_gemini(model_name, prompt, schema_type, api_key=key)
-            except Exception as e:
-                if _is_retryable(str(e)):
-                    _backoff_sleep(min(attempt, 2))
-                else:
-                    break
-    return None
-
 # --- RECOVERY FELLOWSHIP LITERARY PROMPTS ---
-def translate_with_ai(english: str, glossary_text: str, models=None, api_keys=None):
-    models = models or get_fallback_models()
-    api_keys = api_keys or get_api_key_list()
+def translate_with_ai(english: str, glossary_text: str):
     prompt = f"""You are a master literary and technical translator between Arabic and English, endowed with deep bilingual erudition and extensive literary appreciation in both tongues. Above all, you possess profound, specialized expertise in the culture, ethos, and literature of 12-Step recovery fellowships.
 
 YOUR IDENTITY & PHILOSOPHY:
@@ -1564,14 +1545,23 @@ OFFICIAL GLOSSARY:
 Translate:
 English Source: "{english}"
 """
-    parsed = _call_with_key_rotation(prompt, TranslationResult, models, api_keys, max_attempts=MAX_RETRIES_PER_MODEL)
-    if parsed and parsed.get("arabic_translation", "").strip():
-        return {"arabic_translation": parsed.get("arabic_translation", ""), "glossary_notes": parsed.get("glossary_notes", "")}
+    for model_name in get_fallback_models():
+        for attempt in range(MAX_RETRIES_PER_MODEL):
+            try:
+                parsed = _call_gemini(model_name, prompt, TranslationResult)
+                ar_out = parsed.get("arabic_translation", "")
+                if ar_out.strip():
+                    st.session_state["last_ai_error"] = ""
+                    return {"arabic_translation": ar_out, "glossary_notes": parsed.get("glossary_notes", "")}
+            except Exception as e:
+                st.session_state["last_ai_error"] = f"[{model_name}] {e}"
+                if _is_retryable(str(e)):
+                    _backoff_sleep(attempt)
+                else:
+                    break
     return {"arabic_translation": "", "glossary_notes": "⚠ Error"}
 
-def review_with_ai(english: str, arabic: str, glossary_text: str, models=None, api_keys=None):
-    models = models or get_fallback_models()
-    api_keys = api_keys or get_api_key_list()
+def review_with_ai(english: str, arabic: str, glossary_text: str):
     prompt = f"""You are a senior bilingual literary editor and a renowned 12-Step recovery literature specialist. You master the rhetoric of both Arabic and English, with acute sensitivity to fellowship semantics.
 
 YOUR EDITORIAL CRITERIA:
@@ -1588,17 +1578,27 @@ Review this pair:
 English Source: "{english}"
 Original Arabic: "{arabic}"
 """
-    parsed = _call_with_key_rotation(prompt, ReviewResult, models, api_keys, max_attempts=MAX_RETRIES_PER_MODEL)
-    if parsed and parsed.get("suggested_arabic", "").strip():
-        return {"status": parsed.get("status", "minor_edits"), "suggested_arabic": parsed.get("suggested_arabic", arabic), "reasoning": parsed.get("reasoning", "")}
+    for model_name in get_fallback_models():
+        for attempt in range(MAX_RETRIES_PER_MODEL):
+            try:
+                parsed = _call_gemini(model_name, prompt, ReviewResult)
+                sug_out = parsed.get("suggested_arabic", "")
+                if sug_out.strip():
+                    st.session_state["last_ai_error"] = ""
+                    return {"status": parsed.get("status", "minor_edits"), "suggested_arabic": sug_out, "reasoning": parsed.get("reasoning", "")}
+            except Exception as e:
+                st.session_state["last_ai_error"] = f"[{model_name}] {e}"
+                if _is_retryable(str(e)):
+                    _backoff_sleep(attempt)
+                else:
+                    break
     return {"status": "major_rewrite", "suggested_arabic": arabic, "reasoning": "⚠ Error"}
 
-def translate_batch_with_fallback(batch_segments, glossary_text, models=None, api_keys=None):
-    models = models or get_fallback_models()
-    api_keys = api_keys or get_api_key_list()
-    if not GENAI_AVAILABLE or not api_keys:
+def translate_batch_with_fallback(batch_segments, glossary_text):
+    if not GENAI_AVAILABLE or not get_api_key_list():
+        st.session_state["last_ai_error"] = "Google GenAI SDK missing or GEMINI_API_KEYS not configured."
         return [
-            {"id": s.get("id", 0), **translate_with_ai(s.get("english", ""), glossary_text, models, api_keys)}
+            {"id": s.get("id", 0), **translate_with_ai(s.get("english", ""), glossary_text)}
             for s in batch_segments
         ]
     input_payload = "\n\n".join([f"ID: {s.get('id', 0)}\nText: {s.get('english', '')}" for s in batch_segments])
@@ -1621,16 +1621,25 @@ OFFICIAL GLOSSARY:
 
 Segments to Translate:
 {input_payload}"""
-    parsed = _call_with_key_rotation(prompt, TranslationBatchResult, models, api_keys, max_attempts=2)
     by_id = {}
-    if parsed:
-        for item in parsed.get("items", []):
+    for model_name in get_fallback_models():
+        for attempt in range(2):
             try:
-                item_id = int(item.get("id", -1))
-                if item.get("arabic_translation", "").strip():
-                    by_id[item_id] = item
-            except Exception:
-                continue
+                parsed = _call_gemini(model_name, prompt, TranslationBatchResult)
+                items = parsed.get("items", [])
+                for item in items:
+                    item_id = int(item.get("id", -1))
+                    if item.get("arabic_translation", "").strip():
+                        by_id[item_id] = item
+                if len(by_id) == len(batch_segments):
+                    st.session_state["last_ai_error"] = ""
+                    return [by_id[int(s.get("id", 0))] for s in batch_segments]
+            except Exception as e:
+                st.session_state["last_ai_error"] = f"[{model_name}] {e}"
+                if _is_retryable(str(e)):
+                    _backoff_sleep(attempt)
+                else:
+                    break
 
     results = []
     for s in batch_segments:
@@ -1638,17 +1647,15 @@ Segments to Translate:
         if seg_id in by_id:
             results.append(by_id[seg_id])
         else:
-            time.sleep(1.0)
-            res = translate_with_ai(s.get("english", ""), glossary_text, models, api_keys)
+            res = translate_with_ai(s.get("english", ""), glossary_text)
             results.append({"id": seg_id, "arabic_translation": res.get("arabic_translation", ""), "glossary_notes": res.get("glossary_notes", "")})
     return results
 
-def review_batch_with_fallback(batch_segments, glossary_text, models=None, api_keys=None):
-    models = models or get_fallback_models()
-    api_keys = api_keys or get_api_key_list()
-    if not GENAI_AVAILABLE or not api_keys:
+def review_batch_with_fallback(batch_segments, glossary_text):
+    if not GENAI_AVAILABLE or not get_api_key_list():
+        st.session_state["last_ai_error"] = "Google GenAI SDK missing or GEMINI_API_KEYS not configured."
         return [
-            {"id": s.get("id", 0), **review_with_ai(s.get("english", ""), s.get("arabic", ""), glossary_text, models, api_keys)}
+            {"id": s.get("id", 0), **review_with_ai(s.get("english", ""), s.get("arabic", ""), glossary_text)}
             for s in batch_segments
         ]
     input_payload = "\n\n".join([f"ID: {s.get('id', 0)}\nEnglish: {s.get('english', '')}\nArabic: {s.get('arabic', '')}" for s in batch_segments])
@@ -1667,16 +1674,25 @@ OFFICIAL GLOSSARY:
 
 Pairs to Review:
 {input_payload}"""
-    parsed = _call_with_key_rotation(prompt, ReviewBatchResult, models, api_keys, max_attempts=2)
     by_id = {}
-    if parsed:
-        for item in parsed.get("items", []):
+    for model_name in get_fallback_models():
+        for attempt in range(2):
             try:
-                item_id = int(item.get("id", -1))
-                if item.get("suggested_arabic", "").strip():
-                    by_id[item_id] = item
-            except Exception:
-                continue
+                parsed = _call_gemini(model_name, prompt, ReviewBatchResult)
+                items = parsed.get("items", [])
+                for item in items:
+                    item_id = int(item.get("id", -1))
+                    if item.get("suggested_arabic", "").strip():
+                        by_id[item_id] = item
+                if len(by_id) == len(batch_segments):
+                    st.session_state["last_ai_error"] = ""
+                    return [by_id[int(s.get("id", 0))] for s in batch_segments]
+            except Exception as e:
+                st.session_state["last_ai_error"] = f"[{model_name}] {e}"
+                if _is_retryable(str(e)):
+                    _backoff_sleep(attempt)
+                else:
+                    break
 
     results = []
     for s in batch_segments:
@@ -1684,70 +1700,9 @@ Pairs to Review:
         if seg_id in by_id:
             results.append(by_id[seg_id])
         else:
-            time.sleep(1.0)
-            res = review_with_ai(s.get("english", ""), s.get("arabic", ""), glossary_text, models, api_keys)
+            res = review_with_ai(s.get("english", ""), s.get("arabic", ""), glossary_text)
             results.append({"id": seg_id, "status": res.get("status", "minor_edits"), "suggested_arabic": res.get("suggested_arabic", ""), "reasoning": res.get("reasoning", "")})
     return results
-
-def run_batches_in_parallel(batches, worker_fn, progress_bar, progress_offset=0.0, progress_span=1.0):
-    """Runs batches in parallel while preserving exact index order."""
-    if not batches:
-        return []
-    ordered_results = [None] * len(batches)
-    completed = 0
-    max_workers = min(MAX_PARALLEL_WORKERS, len(batches))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_idx = {executor.submit(worker_fn, idx, batch): idx for idx, batch in enumerate(batches)}
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            ordered_results[idx] = future.result()
-            completed += 1
-            progress_bar.progress(min(1.0, progress_offset + (completed / len(batches)) * progress_span))
-    return ordered_results
-
-def _auto_recover_empty_segments(processed_results, app_mode, glossary_data, models_list, api_keys_list, progress_bar=None):
-    """Silently retries any individual segments that came back empty due to transient API throttling."""
-    missing_indices = [
-        idx for idx, item in enumerate(processed_results)
-        if not re.search(r"[\u0600-\u06FF]", str(item.get("user_arabic", "")))
-        and item.get("english") not in ["", "[MISSING ENGLISH SOURCE]"]
-    ]
-    if not missing_indices:
-        if progress_bar is not None:
-            progress_bar.progress(1.0)
-        return processed_results
-
-    for step, idx in enumerate(missing_indices):
-        time.sleep(1.5)
-        item = processed_results[idx]
-        eng_text = item.get("english", "")
-        if app_mode == "Translator Mode":
-            tr_res = translate_with_ai(eng_text, glossary_data, models_list, api_keys_list)
-            ar_txt = tr_res.get("arabic_translation", "").strip()
-            if ar_txt:
-                item["arabic_translation"] = ar_txt
-                item["glossary_notes"] = tr_res.get("glossary_notes", "")
-                item["user_arabic"] = ar_txt
-        else:
-            orig_ar = item.get("original_arabic", "").strip()
-            if not orig_ar:
-                tr_res = translate_with_ai(eng_text, glossary_data, models_list, api_keys_list)
-                orig_ar = tr_res.get("arabic_translation", "").strip()
-                item["original_arabic"] = orig_ar
-                if tr_res.get("glossary_notes"):
-                    item["reasoning"] = f"{item.get('reasoning', '')} | {tr_res.get('glossary_notes')}".strip(" |")
-            if orig_ar:
-                rev_res = review_with_ai(eng_text, orig_ar, glossary_data, models_list, api_keys_list)
-                suggested = rev_res.get("suggested_arabic", "").strip() or orig_ar
-                item["status"] = rev_res.get("status", "minor_edits")
-                item["suggested_arabic"] = suggested
-                if rev_res.get("reasoning"):
-                    item["reasoning"] = rev_res.get("reasoning", "")
-                item["user_arabic"] = suggested
-                item["is_approved"] = (rev_res.get("status") == "perfect")
-        if progress_bar is not None:
-            progress_bar.progress(min(1.0, 0.9 + 0.1 * ((step + 1) / len(missing_indices))))
-    return processed_results
 
 # --- DOCUMENT & DRIVE HANDLERS ---
 def _parse_docs_elements(elements):
@@ -2086,22 +2041,18 @@ if not st.session_state.get("processed_data"):
         progress_bar = st.progress(0)
         st.info("⏳ جاري معالجة المقالة عبر الذكاء الاصطناعي... يرجى الانتظار وعدم تحديث الصفحة لتجنب فقدان البيانات.")
 
-        models_list = get_fallback_models()
-        api_keys_list = get_api_key_list()
-
+        # Sequential batch execution (matching app (4).py) to avoid free-tier burst rate limits
         if app_mode == "Translator Mode":
             batches = [paras[i: i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
-
-            def _trans_worker(idx, batch):
+            for idx, batch in enumerate(batches):
                 batch_payload = [{"id": j + 1, "english": p.get("text", "")} for j, p in enumerate(batch)]
-                ai_results = translate_batch_with_fallback(batch_payload, glossary_data, models_list, api_keys_list)
+                ai_results = translate_batch_with_fallback(batch_payload, glossary_data)
                 res_by_id = {int(r.get("id", -1)): r for r in ai_results}
-                out = []
                 for j, p in enumerate(batch):
                     local_id = j + 1
                     ai_res = res_by_id.get(local_id, {})
                     ar_txt = ai_res.get("arabic_translation", "")
-                    out.append({
+                    processed_results.append({
                         "id": local_id + (idx * BATCH_SIZE),
                         "english": p.get("text", ""),
                         "en_start": p.get("start"),
@@ -2110,47 +2061,38 @@ if not st.session_state.get("processed_data"):
                         "user_arabic": ar_txt,
                         "is_approved": False,
                     })
-                return out
-
-            batch_outputs = run_batches_in_parallel(batches, _trans_worker, progress_bar, progress_offset=0.0, progress_span=0.9)
-            for bo in batch_outputs:
-                processed_results.extend(bo)
+                progress_bar.progress((idx + 1) / len(batches))
 
         else:
             has_arabic = any(re.search(r"[\u0600-\u06FF]", p.get("text", "")) for p in paras)
             if not has_arabic or is_bypass_task:
                 batches = [paras[i: i + BATCH_SIZE] for i in range(0, len(paras), BATCH_SIZE)]
-
-                def _bypass_trans_worker(idx, batch):
+                draft_segments = []
+                for idx, batch in enumerate(batches):
                     batch_payload = [{"id": j + 1, "english": p.get("text", "")} for j, p in enumerate(batch)]
-                    ai_trans = translate_batch_with_fallback(batch_payload, glossary_data, models_list, api_keys_list)
+                    ai_trans = translate_batch_with_fallback(batch_payload, glossary_data)
                     res_by_id = {int(r.get("id", -1)): r for r in ai_trans}
-                    out = []
                     for j, p in enumerate(batch):
                         local_id = j + 1
                         ai_t = res_by_id.get(local_id, {})
-                        out.append({
+                        draft_segments.append({
                             "id": local_id + (idx * BATCH_SIZE),
                             "english": p.get("text", ""),
                             "en_start": p.get("start"),
                             "arabic": ai_t.get("arabic_translation", ""),
                             "glossary_notes": ai_t.get("glossary_notes", ""),
                         })
-                    return out
+                    progress_bar.progress(((idx + 1) / len(batches)) * 0.5)
 
-                draft_batches = run_batches_in_parallel(batches, _bypass_trans_worker, progress_bar, progress_offset=0.0, progress_span=0.45)
-                draft_segments = [seg for db in draft_batches for seg in db]
                 rev_batches = [draft_segments[i: i + BATCH_SIZE] for i in range(0, len(draft_segments), BATCH_SIZE)]
-
-                def _bypass_rev_worker(idx, r_batch):
-                    ai_revs = review_batch_with_fallback(r_batch, glossary_data, models_list, api_keys_list)
+                for idx, r_batch in enumerate(rev_batches):
+                    ai_revs = review_batch_with_fallback(r_batch, glossary_data)
                     rev_by_id = {int(r.get("id", -1)): r for r in ai_revs}
-                    out = []
                     for d_seg in r_batch:
                         seg_id = int(d_seg.get("id", 0))
                         ai_r = rev_by_id.get(seg_id, {})
                         suggested = ai_r.get("suggested_arabic", "") or d_seg.get("arabic", "")
-                        out.append({
+                        processed_results.append({
                             "id": seg_id,
                             "status": ai_r.get("status", "minor_edits"),
                             "english": d_seg.get("english", ""),
@@ -2163,32 +2105,26 @@ if not st.session_state.get("processed_data"):
                             "user_arabic": suggested,
                             "is_approved": ai_r.get("status") == "perfect" and bool(suggested.strip()),
                         })
-                    return out
-
-                rev_outputs = run_batches_in_parallel(rev_batches, _bypass_rev_worker, progress_bar, progress_offset=0.45, progress_span=0.45)
-                for ro in rev_outputs:
-                    processed_results.extend(ro)
+                    progress_bar.progress(0.5 + ((idx + 1) / len(rev_batches)) * 0.5)
             else:
                 segments = smart_align(paras)
                 reviewable_segs = []
                 for s in segments:
                     if s.get("arabic") == "[MISSING ARABIC TRANSLATION]" and s.get("english") != "[MISSING ENGLISH SOURCE]":
-                        tr_res = translate_with_ai(s.get("english", ""), glossary_data, models_list, api_keys_list)
+                        tr_res = translate_with_ai(s.get("english", ""), glossary_data)
                         s["arabic"] = tr_res.get("arabic_translation", "")
                     if s.get("arabic") and s.get("arabic") != "[MISSING ARABIC TRANSLATION]":
                         reviewable_segs.append(s)
 
                 batches = [reviewable_segs[i: i + BATCH_SIZE] for i in range(0, len(reviewable_segs), BATCH_SIZE)]
-
-                def _rev_worker(idx, batch):
-                    ai_results = review_batch_with_fallback(batch, glossary_data, models_list, api_keys_list)
+                for idx, batch in enumerate(batches):
+                    ai_results = review_batch_with_fallback(batch, glossary_data)
                     rev_by_id = {int(r.get("id", -1)): r for r in ai_results}
-                    out = []
                     for o_seg in batch:
                         seg_id = int(o_seg.get("id", 0))
                         ai_res = rev_by_id.get(seg_id, {})
                         suggested = ai_res.get("suggested_arabic", "") or o_seg.get("arabic", "")
-                        out.append({
+                        processed_results.append({
                             "id": seg_id,
                             "status": ai_res.get("status", "minor_edits"),
                             "english": o_seg.get("english", ""),
@@ -2201,18 +2137,8 @@ if not st.session_state.get("processed_data"):
                             "user_arabic": suggested,
                             "is_approved": ai_res.get("status") == "perfect" and bool(suggested.strip()),
                         })
-                    return out
+                    progress_bar.progress((idx + 1) / len(batches))
 
-                rev_outputs = run_batches_in_parallel(batches, _rev_worker, progress_bar, progress_offset=0.0, progress_span=0.9)
-                for ro in rev_outputs:
-                    processed_results.extend(ro)
-
-        # Silent automatic recovery pass for any paragraph that came back blank due to rate-limiting
-        processed_results = _auto_recover_empty_segments(
-            processed_results, app_mode, glossary_data, models_list, api_keys_list, progress_bar
-        )
-
-        # Only save recoverable draft if AI returned actual Arabic content
         has_valid_output = any(
             re.search(r"[\u0600-\u06FF]", str(item.get("user_arabic", "")))
             for item in processed_results
@@ -2223,20 +2149,28 @@ if not st.session_state.get("processed_data"):
         st.session_state["processed_data"] = processed_results
         st.rerun()
 
-# Backup manual retry button if all API keys were temporarily exhausted during automatic recovery
+# Show exact Gemini API error details + one-click retry if any segments are empty
 empty_segments_count = sum(
     1 for item in st.session_state.get("processed_data", [])
     if not str(item.get("user_arabic", "")).strip()
 )
 if empty_segments_count > 0:
-    st.warning(f"⚠️ تنبيه: توجد {empty_segments_count} فقرة لم تكتمل ترجمتها بسبب ضغط مؤقت على الذكاء الاصطناعي.")
+    err_detail = st.session_state.get("last_ai_error", "")
+    st.warning(f"⚠️ تنبيه: توجد {empty_segments_count} فقرة لم تكتمل ترجمتها.")
+    if err_detail:
+        st.error(f"سبب توقف الذكاء الاصطناعي: `{err_detail}`")
     if st.button("🔄 إعادة توليد الفقرات الفارغة بالذكاء الاصطناعي", type="primary"):
         with st.spinner("جاري إعادة معالجة الفقرات الفارغة..."):
-            models_list = get_fallback_models()
-            api_keys_list = get_api_key_list()
-            st.session_state["processed_data"] = _auto_recover_empty_segments(
-                st.session_state["processed_data"], app_mode, glossary_data, models_list, api_keys_list
-            )
+            get_fallback_models.clear()
+            for item in st.session_state["processed_data"]:
+                if not str(item.get("user_arabic", "")).strip() and item.get("english") not in ["", "[MISSING ENGLISH SOURCE]"]:
+                    retry_res = translate_with_ai(item.get("english", ""), glossary_data)
+                    ar_txt = retry_res.get("arabic_translation", "").strip()
+                    if ar_txt:
+                        item["arabic_translation"] = ar_txt
+                        item["suggested_arabic"] = ar_txt
+                        item["user_arabic"] = ar_txt
+                        item["glossary_notes"] = retry_res.get("glossary_notes", "")
             flush_and_save_draft()
             st.rerun()
 
